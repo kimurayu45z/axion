@@ -1,0 +1,9 @@
+[package]
+name = "axion-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axion-syntax = { path = "../axion-syntax" }
+axion-diagnostics = { path = "../axion-diagnostics" }
+axion-lexer = { path = "../axion-lexer" }

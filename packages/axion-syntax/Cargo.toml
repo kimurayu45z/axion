@@ -1,0 +1,6 @@
+[package]
+name = "axion-syntax"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

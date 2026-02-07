@@ -1,0 +1,9 @@
+[package]
+name = "axion-diagnostics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axion-syntax = { path = "../axion-syntax" }
+serde = { workspace = true }
+serde_json = { workspace = true }

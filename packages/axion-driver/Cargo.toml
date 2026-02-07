@@ -1,0 +1,11 @@
+[package]
+name = "axion-driver"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axion-syntax = { path = "../axion-syntax" }
+axion-diagnostics = { path = "../axion-diagnostics" }
+axion-lexer = { path = "../axion-lexer" }
+axion-parser = { path = "../axion-parser" }
+serde_json = { workspace = true }

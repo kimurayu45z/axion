@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "packages/axion-syntax",
+    "packages/axion-diagnostics",
+    "packages/axion-lexer",
+    "packages/axion-parser",
+    "packages/axion-driver",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
