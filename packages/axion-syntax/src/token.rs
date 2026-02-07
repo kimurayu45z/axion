@@ -10,25 +10,27 @@ pub struct Token {
 /// All token kinds in the Axion language.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    // --- Keywords (spec 1.2, 28 reserved words) ---
+    // --- Keywords (spec 1.2, 35 reserved words) ---
     Fn,
     Let,
     Mut,
+    Move,
     Type,
     Struct,
     Enum,
-    Trait,
-    Impl,
+    Interface,
     Match,
     If,
     Else,
     For,
+    While,
     In,
     Return,
     Break,
     Continue,
     Use,
     Mod,
+    Pkg,
     Pub,
     SelfLower,  // `self`
     SelfUpper,  // `Self`
@@ -38,6 +40,11 @@ pub enum TokenKind {
     Where,
     As,
     Const,
+    Dim,
+    Dyn,
+    Extern,
+    Handle,
+    Assert,
     Test,
 
     // --- Identifiers ---
@@ -79,6 +86,7 @@ pub enum TokenKind {
     PipeGt,     // |>
     Question,   // ?
     DotDot,     // ..
+    At,         // @
 
     // --- Delimiters ---
     LParen,     // (
@@ -114,21 +122,23 @@ impl TokenKind {
             "fn" => Some(TokenKind::Fn),
             "let" => Some(TokenKind::Let),
             "mut" => Some(TokenKind::Mut),
+            "move" => Some(TokenKind::Move),
             "type" => Some(TokenKind::Type),
             "struct" => Some(TokenKind::Struct),
             "enum" => Some(TokenKind::Enum),
-            "trait" => Some(TokenKind::Trait),
-            "impl" => Some(TokenKind::Impl),
+            "interface" => Some(TokenKind::Interface),
             "match" => Some(TokenKind::Match),
             "if" => Some(TokenKind::If),
             "else" => Some(TokenKind::Else),
             "for" => Some(TokenKind::For),
+            "while" => Some(TokenKind::While),
             "in" => Some(TokenKind::In),
             "return" => Some(TokenKind::Return),
             "break" => Some(TokenKind::Break),
             "continue" => Some(TokenKind::Continue),
             "use" => Some(TokenKind::Use),
             "mod" => Some(TokenKind::Mod),
+            "pkg" => Some(TokenKind::Pkg),
             "pub" => Some(TokenKind::Pub),
             "self" => Some(TokenKind::SelfLower),
             "Self" => Some(TokenKind::SelfUpper),
@@ -138,6 +148,11 @@ impl TokenKind {
             "where" => Some(TokenKind::Where),
             "as" => Some(TokenKind::As),
             "const" => Some(TokenKind::Const),
+            "dim" => Some(TokenKind::Dim),
+            "dyn" => Some(TokenKind::Dyn),
+            "extern" => Some(TokenKind::Extern),
+            "handle" => Some(TokenKind::Handle),
+            "assert" => Some(TokenKind::Assert),
             "test" => Some(TokenKind::Test),
             _ => None,
         }
@@ -149,8 +164,10 @@ impl TokenKind {
             s,
             "i8" | "i16" | "i32" | "i64" | "i128"
                 | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "usize"
                 | "f16" | "f32" | "f64" | "bf16"
                 | "bool" | "char" | "str"
+                | "never"
         )
     }
 }
