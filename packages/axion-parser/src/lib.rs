@@ -532,6 +532,30 @@ impl Parser {
             });
         }
 
+        // Function type: Fn(T1, T2) -> RetType
+        if let Some(TokenKind::TypeIdent(ref s)) = self.peek_kind() {
+            if s == "Fn" && self.peek_at_kind(1) == Some(TokenKind::LParen) {
+                self.advance(); // consume Fn
+                self.advance(); // consume (
+                let mut params = Vec::new();
+                if !self.check(&TokenKind::RParen) {
+                    params.push(self.parse_type_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        params.push(self.parse_type_expr()?);
+                    }
+                }
+                self.expect(&TokenKind::RParen)?;
+                self.expect(&TokenKind::Arrow)?;
+                let ret = self.parse_type_expr()?;
+                return Some(TypeExpr::Fn {
+                    params,
+                    ret: Box::new(ret),
+                    span: span.merge(self.prev_span()),
+                });
+            }
+        }
+
         // Named type (PascalCase)
         let name = self.expect_type_ident()?;
         let mut args = Vec::new();
@@ -976,6 +1000,14 @@ impl Parser {
                     },
                 })
             }
+            Some(TokenKind::Amp) => {
+                self.advance();
+                let operand = self.parse_postfix_expr()?;
+                Some(Expr {
+                    span: span.merge(operand.span),
+                    kind: ExprKind::Ref(Box::new(operand)),
+                })
+            }
             _ => self.parse_postfix_expr(),
         }
     }
@@ -986,6 +1018,18 @@ impl Parser {
         loop {
             if self.check(&TokenKind::Dot) {
                 self.advance();
+                // Check for `.await` postfix
+                if let Some(TokenKind::Ident(ref s)) = self.peek_kind() {
+                    if s == "await" {
+                        self.advance();
+                        let span = expr.span.merge(self.prev_span());
+                        expr = Expr {
+                            kind: ExprKind::Await(Box::new(expr)),
+                            span,
+                        };
+                        continue;
+                    }
+                }
                 let name = self.expect_ident()?;
                 let span = expr.span.merge(self.prev_span());
                 expr = Expr {
@@ -4280,7 +4324,177 @@ mod tests {
         }
     }
 
-    // --- Full spec example ---
+    // --- P1 gap fixes: Fn type, .await, &expr ---
+
+    #[test]
+    fn test_parse_fn_type_simple() {
+        let source = "fn apply(f: Fn(i64) -> i64, x: i64) -> i64\n    f(x)\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.params[0].ty {
+                    TypeExpr::Fn { params, ret, .. } => {
+                        assert_eq!(params.len(), 1);
+                        assert!(matches!(params[0], TypeExpr::Named { ref name, .. } if name == "i64"));
+                        assert!(matches!(**ret, TypeExpr::Named { ref name, .. } if name == "i64"));
+                    }
+                    other => panic!("expected Fn type, got {:?}", other),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fn_type_no_params() {
+        let source = "fn run(f: Fn() -> {}) -> {}\n    f()\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.params[0].ty {
+                    TypeExpr::Fn { params, .. } => {
+                        assert_eq!(params.len(), 0);
+                    }
+                    other => panic!("expected Fn type, got {:?}", other),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fn_type_multi_params() {
+        let source = "fn apply2(f: Fn(i64, str) -> bool) -> bool\n    f(1, \"a\")\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.params[0].ty {
+                    TypeExpr::Fn { params, ret, .. } => {
+                        assert_eq!(params.len(), 2);
+                        assert!(matches!(**ret, TypeExpr::Named { ref name, .. } if name == "bool"));
+                    }
+                    other => panic!("expected Fn type, got {:?}", other),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fn_type_return() {
+        let source = "fn make_filter(move prefix: String) -> Fn(&str) -> bool\n    |s| s.starts_with(prefix)\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.return_type {
+                    Some(TypeExpr::Fn { params, ret, .. }) => {
+                        assert_eq!(params.len(), 1);
+                        assert!(matches!(params[0], TypeExpr::Ref { .. }));
+                        assert!(matches!(**ret, TypeExpr::Named { ref name, .. } if name == "bool"));
+                    }
+                    other => panic!("expected Fn return type, got {:?}", other),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_await_expr() {
+        let source = "fn fetch(url: &str) -> Result[Data, Error] with IO, Async\n    let data = http.get(url).await\n    data\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.body[0].kind {
+                    StmtKind::Let { value, .. } => {
+                        assert!(matches!(value.kind, ExprKind::Await(_)));
+                    }
+                    other => panic!("expected let, got {:?}", other),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_await_chained() {
+        let source = "fn main()\n    let x = fetch().await.parse()\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.body[0].kind {
+                    StmtKind::Let { value, .. } => {
+                        // Should be Call(Field(Await(Call(...)), "parse"))
+                        match &value.kind {
+                            ExprKind::Call { func, .. } => {
+                                match &func.kind {
+                                    ExprKind::Field { expr, name } => {
+                                        assert_eq!(name, "parse");
+                                        assert!(matches!(expr.kind, ExprKind::Await(_)));
+                                    }
+                                    other => panic!("expected field, got {:?}", other),
+                                }
+                            }
+                            other => panic!("expected call, got {:?}", other),
+                        }
+                    }
+                    _ => panic!("expected let"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ref_expr() {
+        let source = "fn main()\n    let x = &\"hello\"\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.body[0].kind {
+                    StmtKind::Let { value, .. } => {
+                        match &value.kind {
+                            ExprKind::Ref(inner) => {
+                                assert!(matches!(inner.kind, ExprKind::StringLit(ref s) if s == "hello"));
+                            }
+                            other => panic!("expected ref, got {:?}", other),
+                        }
+                    }
+                    _ => panic!("expected let"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ref_in_call() {
+        let source = "fn main()\n    contains(&\"@\")\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.body[0].kind {
+                    StmtKind::Expr(expr) => match &expr.kind {
+                        ExprKind::Call { args, .. } => {
+                            assert_eq!(args.len(), 1);
+                            assert!(matches!(args[0].expr.kind, ExprKind::Ref(_)));
+                        }
+                        other => panic!("expected call, got {:?}", other),
+                    },
+                    _ => panic!("expected expr stmt"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
 
     #[test]
     fn test_parse_full_spec_example() {

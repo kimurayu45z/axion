@@ -483,6 +483,10 @@ pub enum ExprKind {
     },
     /// Postfix `?` — error propagation
     Try(Box<Expr>),
+    /// Postfix `.await` — async await
+    Await(Box<Expr>),
+    /// Reference expression: `&expr` (e.g. `&"hello"`)
+    Ref(Box<Expr>),
     /// String interpolation: `"Hello, {name}!"`
     StringInterp {
         parts: Vec<StringInterpPart>,
