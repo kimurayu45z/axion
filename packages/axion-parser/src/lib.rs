@@ -240,7 +240,7 @@ impl Parser {
             ReceiverModifier::Borrow
         };
 
-        let receiver_type = self.expect_type_ident()?;
+        let receiver_type = self.parse_type_expr()?;
         self.expect(&TokenKind::RBracket)?;
 
         let name = self.expect_ident()?;
@@ -673,12 +673,35 @@ impl Parser {
         })
     }
 
-    fn parse_effect_list(&mut self) -> Option<Vec<String>> {
+    fn parse_effect_list(&mut self) -> Option<Vec<Effect>> {
         let mut effects = Vec::new();
-        effects.push(self.expect_type_ident()?);
-        while self.check(&TokenKind::Comma) {
+        loop {
+            let span = self.current_span();
+            let name = self.expect_type_ident()?;
+            let args = if self.check(&TokenKind::LBracket) {
+                self.advance();
+                let mut a = Vec::new();
+                if !self.check(&TokenKind::RBracket) {
+                    a.push(self.parse_type_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        a.push(self.parse_type_expr()?);
+                    }
+                }
+                self.expect(&TokenKind::RBracket)?;
+                a
+            } else {
+                Vec::new()
+            };
+            effects.push(Effect {
+                name,
+                args,
+                span: span.merge(self.prev_span()),
+            });
+            if !self.check(&TokenKind::Comma) {
+                break;
+            }
             self.advance();
-            effects.push(self.expect_type_ident()?);
         }
         Some(effects)
     }
@@ -1058,6 +1081,26 @@ impl Parser {
                     },
                     span,
                 };
+            } else if self.check(&TokenKind::LBracket) {
+                // Turbofish type application: `f[T](args)`, `HashMap[K, V].new()`
+                self.advance();
+                let mut type_args = Vec::new();
+                if !self.check(&TokenKind::RBracket) {
+                    type_args.push(self.parse_type_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        type_args.push(self.parse_type_expr()?);
+                    }
+                }
+                self.expect(&TokenKind::RBracket)?;
+                let span = expr.span.merge(self.prev_span());
+                expr = Expr {
+                    kind: ExprKind::TypeApp {
+                        expr: Box::new(expr),
+                        type_args,
+                    },
+                    span,
+                };
             } else if self.check(&TokenKind::Question) {
                 self.advance();
                 let span = expr.span.merge(self.prev_span());
@@ -1099,9 +1142,16 @@ impl Parser {
         match self.peek_kind() {
             Some(TokenKind::IntLit(_)) => {
                 if let TokenKind::IntLit(s) = self.advance_and_get() {
-                    // Strip underscores and type suffix for parsing
-                    let clean: String = s.chars().take_while(|c| *c != '_' || s.contains("0x") || s.contains("0b")).collect();
-                    let num_str: String = clean.replace('_', "");
+                    // Extract optional type suffix (e.g. "42_i32" -> suffix "i32")
+                    let suffix_pos = s.rfind('_').filter(|&i| {
+                        i + 1 < s.len() && s.as_bytes()[i + 1].is_ascii_alphabetic()
+                    });
+                    let (num_part, suffix) = if let Some(i) = suffix_pos {
+                        (&s[..i], Some(s[i + 1..].to_string()))
+                    } else {
+                        (s.as_str(), None)
+                    };
+                    let num_str: String = num_part.replace('_', "");
                     let value = if num_str.starts_with("0x") {
                         i128::from_str_radix(&num_str[2..], 16).unwrap_or(0)
                     } else if num_str.starts_with("0b") {
@@ -1112,7 +1162,7 @@ impl Parser {
                         num_str.parse().unwrap_or(0)
                     };
                     Some(Expr {
-                        kind: ExprKind::IntLit(value),
+                        kind: ExprKind::IntLit(value, suffix),
                         span,
                     })
                 } else {
@@ -1121,10 +1171,19 @@ impl Parser {
             }
             Some(TokenKind::FloatLit(_)) => {
                 if let TokenKind::FloatLit(s) = self.advance_and_get() {
-                    let clean: String = s.replace('_', "");
+                    // Extract optional type suffix (e.g. "3.14_f64" -> suffix "f64")
+                    let suffix_pos = s.rfind('_').filter(|&i| {
+                        i + 1 < s.len() && s.as_bytes()[i + 1].is_ascii_alphabetic()
+                    });
+                    let (num_part, suffix) = if let Some(i) = suffix_pos {
+                        (&s[..i], Some(s[i + 1..].to_string()))
+                    } else {
+                        (s.as_str(), None)
+                    };
+                    let clean: String = num_part.replace('_', "");
                     let value: f64 = clean.parse().unwrap_or(0.0);
                     Some(Expr {
-                        kind: ExprKind::FloatLit(value),
+                        kind: ExprKind::FloatLit(value, suffix),
                         span,
                     })
                 } else {
@@ -1147,7 +1206,7 @@ impl Parser {
             Some(TokenKind::CharLit(_)) => {
                 if let TokenKind::CharLit(c) = self.advance_and_get() {
                     Some(Expr {
-                        kind: ExprKind::IntLit(c as i128),
+                        kind: ExprKind::CharLit(c),
                         span,
                     })
                 } else {
@@ -2650,7 +2709,7 @@ mod tests {
                 match &f.body[0].kind {
                     StmtKind::Let { name, value, .. } => {
                         assert_eq!(name, "x");
-                        assert!(matches!(value.kind, ExprKind::IntLit(42)));
+                        assert!(matches!(value.kind, ExprKind::IntLit(42, None)));
                     }
                     _ => panic!("expected let"),
                 }
@@ -2700,7 +2759,9 @@ mod tests {
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
             ItemKind::Function(f) => {
-                assert_eq!(f.effects, vec!["IO"]);
+                assert_eq!(f.effects.len(), 1);
+                assert_eq!(f.effects[0].name, "IO");
+                assert!(f.effects[0].args.is_empty());
             }
             _ => panic!("expected function"),
         }
@@ -3040,7 +3101,7 @@ mod tests {
                         ExprKind::For { body, .. } => {
                             match &body[0].kind {
                                 StmtKind::Break(Some(val)) => {
-                                    assert!(matches!(val.kind, ExprKind::IntLit(42)));
+                                    assert!(matches!(val.kind, ExprKind::IntLit(42, None)));
                                 }
                                 other => panic!("expected break with value, got {:?}", other),
                             }
@@ -3332,7 +3393,7 @@ mod tests {
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
             ItemKind::Method(m) => {
-                assert_eq!(m.receiver_type, "User");
+                assert!(matches!(&m.receiver_type, TypeExpr::Named { name, args, .. } if name == "User" && args.is_empty()));
                 assert_eq!(m.name, "display_name");
                 assert_eq!(m.receiver_modifier, ReceiverModifier::Borrow);
             }
@@ -3550,7 +3611,7 @@ mod tests {
                 match &f.body[0].kind {
                     StmtKind::Assign { target, value } => {
                         assert!(matches!(target.kind, ExprKind::Ident(ref s) if s == "x"));
-                        assert!(matches!(value.kind, ExprKind::IntLit(42)));
+                        assert!(matches!(value.kind, ExprKind::IntLit(42, None)));
                     }
                     other => panic!("expected assign, got {:?}", other),
                 }
@@ -4492,6 +4553,254 @@ mod tests {
                     _ => panic!("expected expr stmt"),
                 }
             }
+            _ => panic!("expected function"),
+        }
+    }
+
+    // --- P2/P3: CharLit, numeric suffixes, turbofish, parameterized effects, generic receiver, line continuation ---
+
+    #[test]
+    fn test_parse_char_lit() {
+        let source = "fn main()\n    let c = 'A'\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => {
+                    assert!(matches!(value.kind, ExprKind::CharLit('A')));
+                }
+                _ => panic!("expected let"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_int_suffix() {
+        let source = "fn main()\n    let x = 42_i32\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => match &value.kind {
+                    ExprKind::IntLit(42, Some(suffix)) => {
+                        assert_eq!(suffix, "i32");
+                    }
+                    other => panic!("expected IntLit(42, Some(\"i32\")), got {:?}", other),
+                },
+                _ => panic!("expected let"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_int_no_suffix() {
+        let source = "fn main()\n    let x = 1_000\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => match &value.kind {
+                    ExprKind::IntLit(1000, None) => {}
+                    other => panic!("expected IntLit(1000, None), got {:?}", other),
+                },
+                _ => panic!("expected let"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_float_suffix() {
+        let source = "fn main()\n    let x = 3.14_f32\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => match &value.kind {
+                    ExprKind::FloatLit(_, Some(suffix)) => {
+                        assert_eq!(suffix, "f32");
+                    }
+                    other => panic!("expected FloatLit with suffix f32, got {:?}", other),
+                },
+                _ => panic!("expected let"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_turbofish_call() {
+        let source = "fn main()\n    parse[Config](\"config.toml\")\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Expr(expr) => match &expr.kind {
+                    ExprKind::Call { func, args } => {
+                        match &func.kind {
+                            ExprKind::TypeApp { expr: inner, type_args } => {
+                                assert!(matches!(&inner.kind, ExprKind::Ident(s) if s == "parse"));
+                                assert_eq!(type_args.len(), 1);
+                            }
+                            other => panic!("expected TypeApp, got {:?}", other),
+                        }
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("expected Call, got {:?}", other),
+                },
+                _ => panic!("expected expr stmt"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_turbofish_method() {
+        let source = "fn main()\n    HashMap[String, i64].new()\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Expr(expr) => match &expr.kind {
+                    ExprKind::Call { func, .. } => {
+                        // func should be Field { expr: TypeApp { HashMap, [String, i64] }, name: "new" }
+                        match &func.kind {
+                            ExprKind::Field { expr: base, name } => {
+                                assert_eq!(name, "new");
+                                assert!(matches!(&base.kind, ExprKind::TypeApp { type_args, .. } if type_args.len() == 2));
+                            }
+                            other => panic!("expected Field, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Call, got {:?}", other),
+                },
+                _ => panic!("expected expr stmt"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_parameterized_effects() {
+        let source = "fn run(config: Config) -> Result[Data, Error] with IO, State[Config]\n    config\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                assert_eq!(f.effects.len(), 2);
+                assert_eq!(f.effects[0].name, "IO");
+                assert!(f.effects[0].args.is_empty());
+                assert_eq!(f.effects[1].name, "State");
+                assert_eq!(f.effects[1].args.len(), 1);
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_receiver_type() {
+        let source = "fn@[Vec[T]] len() -> usize\n    0\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Method(m) => {
+                match &m.receiver_type {
+                    TypeExpr::Named { name, args, .. } => {
+                        assert_eq!(name, "Vec");
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("expected Named type, got {:?}", other),
+                }
+                assert_eq!(m.name, "len");
+            }
+            _ => panic!("expected method"),
+        }
+    }
+
+    #[test]
+    fn test_parse_line_continuation() {
+        // Line ending with `+` should suppress newline
+        let source = "fn main()\n    let x = 1 +\n        2\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => match &value.kind {
+                    ExprKind::BinOp { op, .. } => {
+                        assert_eq!(*op, BinOp::Add);
+                    }
+                    other => panic!("expected BinOp(Add), got {:?}", other),
+                },
+                _ => panic!("expected let"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_line_continuation_dot() {
+        // Line ending with `.` should suppress newline
+        let source = "fn main()\n    foo.\n        bar().\n        baz()\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                assert_eq!(f.body.len(), 1);
+                // Should be a single chained call: foo.bar().baz()
+                match &f.body[0].kind {
+                    StmtKind::Expr(expr) => match &expr.kind {
+                        ExprKind::Call { func, .. } => {
+                            match &func.kind {
+                                ExprKind::Field { name, .. } => assert_eq!(name, "baz"),
+                                other => panic!("expected Field(baz), got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected Call, got {:?}", other),
+                    },
+                    _ => panic!("expected expr stmt"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_line_continuation_comma() {
+        // Line ending with `,` should suppress newline (multi-line args)
+        let source = "fn main()\n    foo(1,\n        2,\n        3)\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Expr(expr) => match &expr.kind {
+                    ExprKind::Call { args, .. } => {
+                        assert_eq!(args.len(), 3);
+                    }
+                    other => panic!("expected Call with 3 args, got {:?}", other),
+                },
+                _ => panic!("expected expr stmt"),
+            },
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_hex_int_suffix() {
+        let source = "fn main()\n    let x = 0xff_u8\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => match &f.body[0].kind {
+                StmtKind::Let { value, .. } => match &value.kind {
+                    ExprKind::IntLit(255, Some(suffix)) => {
+                        assert_eq!(suffix, "u8");
+                    }
+                    other => panic!("expected IntLit(255, Some(\"u8\")), got {:?}", other),
+                },
+                _ => panic!("expected let"),
+            },
             _ => panic!("expected function"),
         }
     }

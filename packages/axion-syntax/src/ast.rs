@@ -85,8 +85,16 @@ pub struct FnDef {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
-    pub effects: Vec<String>,
+    pub effects: Vec<Effect>,
     pub body: Vec<Stmt>,
+}
+
+/// An effect in a `with` clause, e.g. `IO`, `State[Config]`
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effect {
+    pub name: String,
+    pub args: Vec<TypeExpr>,
+    pub span: Span,
 }
 
 /// Function parameter.
@@ -104,12 +112,12 @@ pub struct Param {
 pub struct MethodDef {
     pub vis: Visibility,
     pub receiver_modifier: ReceiverModifier,
-    pub receiver_type: String,
+    pub receiver_type: TypeExpr,
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
-    pub effects: Vec<String>,
+    pub effects: Vec<Effect>,
     pub body: Vec<Stmt>,
 }
 
@@ -395,12 +403,14 @@ pub struct HandleArm {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    /// Integer literal
-    IntLit(i128),
-    /// Float literal
-    FloatLit(f64),
+    /// Integer literal with optional type suffix (e.g. `42_i32`)
+    IntLit(i128, Option<String>),
+    /// Float literal with optional type suffix (e.g. `3.14_f64`)
+    FloatLit(f64, Option<String>),
     /// String literal
     StringLit(String),
+    /// Character literal
+    CharLit(char),
     /// Bool literal
     BoolLit(bool),
     /// Variable reference
@@ -490,6 +500,11 @@ pub enum ExprKind {
     /// String interpolation: `"Hello, {name}!"`
     StringInterp {
         parts: Vec<StringInterpPart>,
+    },
+    /// Type application (turbofish): `f[T]`, `parse[Config](...)`
+    TypeApp {
+        expr: Box<Expr>,
+        type_args: Vec<TypeExpr>,
     },
 }
 

@@ -68,15 +68,23 @@ impl<'src> Lexer<'src> {
                 continue;
             }
 
-            // Newline
+            // Newline — suppress if last token is a trailing operator (line continuation)
             if self.peek() == Some(b'\n') {
                 let start = self.pos;
                 self.advance();
-                tokens.push(Token {
-                    kind: TokenKind::Newline,
-                    span: Span::new(start as u32, self.pos as u32),
-                });
-                self.at_line_start = true;
+                let suppress = tokens.last().map_or(false, |t| Self::is_continuation_op(&t.kind));
+                if !suppress {
+                    tokens.push(Token {
+                        kind: TokenKind::Newline,
+                        span: Span::new(start as u32, self.pos as u32),
+                    });
+                    self.at_line_start = true;
+                } else {
+                    // Skip leading whitespace on continuation line, but don't handle indentation
+                    while self.peek() == Some(b' ') {
+                        self.advance();
+                    }
+                }
                 continue;
             }
 
@@ -388,7 +396,7 @@ impl<'src> Lexer<'src> {
         if self.peek() == Some(b'0') && self.peek_at(1).is_some_and(|b| b == b'x' || b == b'b' || b == b'o') {
             self.advance(); // 0
             self.advance(); // x/b/o
-            while self.peek().is_some_and(|b| b.is_ascii_hexdigit() || b == b'_') {
+            while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) || (self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|b| b.is_ascii_hexdigit())) {
                 self.advance();
             }
         } else {
@@ -401,7 +409,7 @@ impl<'src> Lexer<'src> {
             if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
                 is_float = true;
                 self.advance(); // .
-                while self.peek().is_some_and(|b| b.is_ascii_digit() || b == b'_') {
+                while self.peek().is_some_and(|b| b.is_ascii_digit()) || (self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit())) {
                     self.advance();
                 }
             }
@@ -413,7 +421,7 @@ impl<'src> Lexer<'src> {
                 if self.peek().is_some_and(|b| b == b'+' || b == b'-') {
                     self.advance();
                 }
-                while self.peek().is_some_and(|b| b.is_ascii_digit() || b == b'_') {
+                while self.peek().is_some_and(|b| b.is_ascii_digit()) || (self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit())) {
                     self.advance();
                 }
             }
@@ -711,6 +719,32 @@ impl<'src> Lexer<'src> {
 
     // --- Helper methods ---
 
+    /// Returns true if the token kind is a trailing operator that triggers line continuation.
+    fn is_continuation_op(kind: &TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Eq
+                | TokenKind::EqEq
+                | TokenKind::BangEq
+                | TokenKind::Lt
+                | TokenKind::LtEq
+                | TokenKind::Gt
+                | TokenKind::GtEq
+                | TokenKind::AmpAmp
+                | TokenKind::PipePipe
+                | TokenKind::PipeGt
+                | TokenKind::Arrow
+                | TokenKind::FatArrow
+                | TokenKind::Dot
+                | TokenKind::Comma
+        )
+    }
+
     fn is_eof(&self) -> bool {
         self.pos >= self.bytes.len()
     }
@@ -929,5 +963,41 @@ mod tests {
         assert!(matches!(kinds[3], TokenKind::Ident(ref s) if s == "b"));
         assert!(matches!(kinds[4], TokenKind::StringInterpEnd(ref s) if s == ""));
         assert_eq!(kinds[5], TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_line_continuation_operator() {
+        // Trailing `+` should suppress newline
+        let kinds = token_kinds("a +\n    b");
+        assert_eq!(kinds, vec![
+            TokenKind::Ident("a".into()),
+            TokenKind::Plus,
+            TokenKind::Ident("b".into()),
+            TokenKind::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_line_continuation_dot() {
+        // Trailing `.` should suppress newline
+        let kinds = token_kinds("foo.\n    bar");
+        assert_eq!(kinds, vec![
+            TokenKind::Ident("foo".into()),
+            TokenKind::Dot,
+            TokenKind::Ident("bar".into()),
+            TokenKind::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_no_line_continuation() {
+        // Non-operator trailing token should NOT suppress newline
+        let kinds = token_kinds("foo\nbar");
+        assert_eq!(kinds, vec![
+            TokenKind::Ident("foo".into()),
+            TokenKind::Newline,
+            TokenKind::Ident("bar".into()),
+            TokenKind::Eof,
+        ]);
     }
 }
