@@ -159,6 +159,11 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: Span,
     },
+    /// Slice type: `&[T]`
+    Slice {
+        inner: Box<TypeExpr>,
+        span: Span,
+    },
     /// Dynamic dispatch type: `dyn Type`
     Dyn {
         inner: Box<TypeExpr>,
@@ -253,6 +258,7 @@ pub struct InterfaceDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceMethod {
     pub name: String,
+    pub receiver_modifier: Option<ReceiverModifier>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub span: Span,
@@ -281,6 +287,7 @@ pub struct UseDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExternBlock {
+    pub abi: Option<String>,
     pub decls: Vec<ExternFnDecl>,
     pub span: Span,
 }
@@ -299,14 +306,23 @@ pub struct ExternFnDecl {
 pub struct TestDef {
     pub name: String,
     pub modifier: Option<TestModifier>,
-    pub for_params: Vec<String>,
+    pub for_params: Vec<TestParam>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestParam {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestModifier {
     Fuzz,
-    Prop,
+    Property,
+    Snapshot,
+    Bench,
 }
 
 // --- Statement ---
@@ -324,6 +340,18 @@ pub enum StmtKind {
         is_mut: bool,
         name: String,
         ty: Option<TypeExpr>,
+        value: Expr,
+    },
+    /// `let {x, y} = expr` or `let [first, ..rest] = items`
+    LetPattern {
+        is_mut: bool,
+        pattern: Pattern,
+        ty: Option<TypeExpr>,
+        value: Expr,
+    },
+    /// Assignment: `x = value`, `self.name = new_name`, `a.b.c = 1`
+    Assign {
+        target: Expr,
         value: Expr,
     },
     /// Expression statement
@@ -453,6 +481,21 @@ pub enum ExprKind {
         expr: Box<Expr>,
         arms: Vec<HandleArm>,
     },
+    /// Postfix `?` — error propagation
+    Try(Box<Expr>),
+    /// String interpolation: `"Hello, {name}!"`
+    StringInterp {
+        parts: Vec<StringInterpPart>,
+    },
+}
+
+/// Part of an interpolated string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringInterpPart {
+    /// Literal text
+    Literal(String),
+    /// Interpolated expression
+    Expr(Expr),
 }
 
 /// A field initializer in a struct literal.
@@ -532,4 +575,24 @@ pub enum PatternKind {
         path: Vec<String>,
         fields: Vec<Pattern>,
     },
+    /// OR pattern: `A | B`
+    Or(Vec<Pattern>),
+    /// Rest pattern: `..` or `..rest`
+    Rest(Option<String>),
+    /// List pattern: `[first, ..rest]`
+    List(Vec<Pattern>),
+    /// Struct pattern: `User #{name, age}` or `User #{name: n, ..}`
+    Struct {
+        name: String,
+        fields: Vec<FieldPattern>,
+        has_rest: bool,
+    },
+}
+
+/// A field in a struct pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldPattern {
+    pub name: String,
+    pub pattern: Option<Pattern>,
+    pub span: Span,
 }

@@ -466,6 +466,7 @@ impl<'src> Lexer<'src> {
                         Some(b'\\') => { content.push('\\'); self.advance(); }
                         Some(b'"') => { content.push('"'); self.advance(); }
                         Some(b'0') => { content.push('\0'); self.advance(); }
+                        Some(b'{') => { content.push('{'); self.advance(); }
                         _ => {
                             self.diagnostics.push(Diagnostic::error(
                                 "E0006",
@@ -476,6 +477,142 @@ impl<'src> Lexer<'src> {
                                 self.source,
                             ));
                             self.advance();
+                        }
+                    }
+                }
+                Some(b'{') => {
+                    // String interpolation: emit StringInterpStart, then lex the inner expression tokens,
+                    // and continue with StringInterpPart / StringInterpEnd.
+                    let start_tok = Token {
+                        kind: TokenKind::StringInterpStart(content),
+                        span: Span::new(start as u32, self.pos as u32),
+                    };
+                    self.advance(); // consume {
+
+                    // Lex inner expression tokens until matching }
+                    let mut inner_tokens = vec![start_tok];
+                    let mut brace_depth = 1u32;
+                    while !self.is_eof() && brace_depth > 0 {
+                        // Skip spaces inside interpolation
+                        if self.peek() == Some(b' ') {
+                            self.advance();
+                            continue;
+                        }
+                        if self.peek() == Some(b'}') {
+                            brace_depth -= 1;
+                            if brace_depth == 0 {
+                                self.advance(); // consume closing }
+                                break;
+                            }
+                        }
+                        if self.peek() == Some(b'{') {
+                            brace_depth += 1;
+                        }
+                        if let Some(tok) = self.next_token() {
+                            inner_tokens.push(tok);
+                        }
+                    }
+
+                    // Now continue reading the rest of the string
+                    loop {
+                        let mut part_content = String::new();
+                        let part_start = self.pos;
+                        loop {
+                            match self.peek() {
+                                None | Some(b'\n') => {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "E0005",
+                                        "syntax_error",
+                                        "unterminated string literal",
+                                        &self.file,
+                                        Span::new(part_start as u32, self.pos as u32),
+                                        self.source,
+                                    ));
+                                    // Emit end token with whatever we have
+                                    inner_tokens.push(Token {
+                                        kind: TokenKind::StringInterpEnd(part_content),
+                                        span: Span::new(part_start as u32, self.pos as u32),
+                                    });
+                                    // Push all tokens in reverse onto pending
+                                    inner_tokens.reverse();
+                                    for tok in inner_tokens {
+                                        self.pending.push(tok);
+                                    }
+                                    return self.pending.pop();
+                                }
+                                Some(b'\\') => {
+                                    self.advance();
+                                    match self.peek() {
+                                        Some(b'n') => { part_content.push('\n'); self.advance(); }
+                                        Some(b't') => { part_content.push('\t'); self.advance(); }
+                                        Some(b'r') => { part_content.push('\r'); self.advance(); }
+                                        Some(b'\\') => { part_content.push('\\'); self.advance(); }
+                                        Some(b'"') => { part_content.push('"'); self.advance(); }
+                                        Some(b'0') => { part_content.push('\0'); self.advance(); }
+                                        Some(b'{') => { part_content.push('{'); self.advance(); }
+                                        _ => {
+                                            self.diagnostics.push(Diagnostic::error(
+                                                "E0006",
+                                                "syntax_error",
+                                                "invalid escape sequence",
+                                                &self.file,
+                                                Span::new((self.pos - 1) as u32, (self.pos + 1) as u32),
+                                                self.source,
+                                            ));
+                                            self.advance();
+                                        }
+                                    }
+                                }
+                                Some(b'"') => {
+                                    self.advance(); // closing "
+                                    inner_tokens.push(Token {
+                                        kind: TokenKind::StringInterpEnd(part_content),
+                                        span: Span::new(part_start as u32, self.pos as u32),
+                                    });
+                                    // Push all tokens in reverse onto pending
+                                    inner_tokens.reverse();
+                                    for tok in inner_tokens {
+                                        self.pending.push(tok);
+                                    }
+                                    return self.pending.pop();
+                                }
+                                Some(b'{') => {
+                                    // Another interpolation
+                                    inner_tokens.push(Token {
+                                        kind: TokenKind::StringInterpPart(part_content),
+                                        span: Span::new(part_start as u32, self.pos as u32),
+                                    });
+                                    self.advance(); // consume {
+                                    // Lex inner expression tokens
+                                    let mut depth = 1u32;
+                                    while !self.is_eof() && depth > 0 {
+                                        if self.peek() == Some(b' ') {
+                                            self.advance();
+                                            continue;
+                                        }
+                                        if self.peek() == Some(b'}') {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                self.advance();
+                                                break;
+                                            }
+                                        }
+                                        if self.peek() == Some(b'{') {
+                                            depth += 1;
+                                        }
+                                        if let Some(tok) = self.next_token() {
+                                            inner_tokens.push(tok);
+                                        }
+                                    }
+                                    break; // restart the outer loop for the next part
+                                }
+                                Some(_) => {
+                                    let ch = self.next_char();
+                                    if let Some(c) = ch {
+                                        part_content.push(c);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -503,6 +640,7 @@ impl<'src> Lexer<'src> {
             }
         }
 
+        // No interpolation — emit plain StringLit
         Some(Token {
             kind: TokenKind::StringLit(content),
             span: Span::new(start as u32, self.pos as u32),
@@ -746,5 +884,50 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    // --- String interpolation tests ---
+
+    #[test]
+    fn test_string_interp_simple() {
+        let kinds = token_kinds("\"Hello, {name}\"");
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "Hello, "));
+        assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "name"));
+        assert!(matches!(kinds[2], TokenKind::StringInterpEnd(ref s) if s == ""));
+        assert_eq!(kinds[3], TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_string_no_interp() {
+        let kinds = token_kinds("\"no interp\"");
+        assert_eq!(kinds, vec![TokenKind::StringLit("no interp".into()), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn test_string_interp_multi() {
+        let kinds = token_kinds("\"a {x} b {y} c\"");
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "a "));
+        assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "x"));
+        assert!(matches!(kinds[2], TokenKind::StringInterpPart(ref s) if s == " b "));
+        assert!(matches!(kinds[3], TokenKind::Ident(ref s) if s == "y"));
+        assert!(matches!(kinds[4], TokenKind::StringInterpEnd(ref s) if s == " c"));
+        assert_eq!(kinds[5], TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_string_interp_escaped() {
+        let kinds = token_kinds("\"\\{escaped}\"");
+        assert_eq!(kinds, vec![TokenKind::StringLit("{escaped}".into()), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn test_string_interp_expr() {
+        let kinds = token_kinds("\"{a + b}\"");
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == ""));
+        assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "a"));
+        assert_eq!(kinds[2], TokenKind::Plus);
+        assert!(matches!(kinds[3], TokenKind::Ident(ref s) if s == "b"));
+        assert!(matches!(kinds[4], TokenKind::StringInterpEnd(ref s) if s == ""));
+        assert_eq!(kinds[5], TokenKind::Eof);
     }
 }

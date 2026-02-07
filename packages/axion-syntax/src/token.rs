@@ -63,6 +63,14 @@ pub enum TokenKind {
     /// Character literal
     CharLit(char),
 
+    // --- String interpolation ---
+    /// Start of an interpolated string: text before the first `{`
+    StringInterpStart(String),
+    /// Middle part of an interpolated string: text between `}` and next `{`
+    StringInterpPart(String),
+    /// End of an interpolated string: text after the last `}`
+    StringInterpEnd(String),
+
     // --- Operators ---
     Plus,       // +
     Minus,      // -
