@@ -9,6 +9,7 @@ pub mod entry;
 #[cfg(test)]
 mod tests;
 
+use axion_mono::output::MonoOutput;
 use axion_resolve::ResolveOutput;
 use axion_types::env::TypeEnv;
 use axion_types::TypeCheckOutput;
@@ -21,7 +22,10 @@ use inkwell::OptimizationLevel;
 
 use crate::context::CodegenCtx;
 use crate::entry::create_entry_point;
-use crate::function::{compile_functions, declare_functions};
+use crate::function::{
+    compile_functions, compile_specialized_functions, declare_functions,
+    declare_specialized_functions,
+};
 use crate::intrinsics::declare_intrinsics;
 
 /// Compile a source file to LLVM IR (as a string).
@@ -31,18 +35,21 @@ pub fn compile_to_ir(
     type_check: &TypeCheckOutput,
     type_env: &TypeEnv,
     module_name: &str,
+    mono_output: Option<&MonoOutput>,
 ) -> String {
     let context = Context::create();
-    let mut ctx = CodegenCtx::new(&context, module_name, resolved, type_check, type_env);
+    let mut ctx = CodegenCtx::new(&context, module_name, resolved, type_check, type_env, mono_output);
 
     // Phase 1: Declare all functions.
     declare_functions(&mut ctx, source_file);
+    declare_specialized_functions(&mut ctx);
 
     // Phase 2: Declare intrinsics.
     declare_intrinsics(&mut ctx);
 
     // Phase 3: Compile function bodies.
     compile_functions(&mut ctx, source_file);
+    compile_specialized_functions(&mut ctx);
 
     // Phase 4: Create entry point wrapper.
     create_entry_point(&mut ctx);
@@ -57,13 +64,16 @@ pub fn compile_to_object(
     type_check: &TypeCheckOutput,
     type_env: &TypeEnv,
     module_name: &str,
+    mono_output: Option<&MonoOutput>,
 ) -> Result<Vec<u8>, String> {
     let context = Context::create();
-    let mut ctx = CodegenCtx::new(&context, module_name, resolved, type_check, type_env);
+    let mut ctx = CodegenCtx::new(&context, module_name, resolved, type_check, type_env, mono_output);
 
     declare_functions(&mut ctx, source_file);
+    declare_specialized_functions(&mut ctx);
     declare_intrinsics(&mut ctx);
     compile_functions(&mut ctx, source_file);
+    compile_specialized_functions(&mut ctx);
     create_entry_point(&mut ctx);
 
     // Verify the module.
@@ -102,8 +112,9 @@ pub fn compile_to_executable(
     type_env: &TypeEnv,
     module_name: &str,
     output_path: &str,
+    mono_output: Option<&MonoOutput>,
 ) -> Result<(), String> {
-    let obj_bytes = compile_to_object(source_file, resolved, type_check, type_env, module_name)?;
+    let obj_bytes = compile_to_object(source_file, resolved, type_check, type_env, module_name, mono_output)?;
 
     // Write object file to a temp path.
     let obj_path = format!("{}.o", output_path);

@@ -11,5 +11,7 @@ axion-parser = { path = "../axion-parser" }
 axion-resolve = { path = "../axion-resolve" }
 axion-types = { path = "../axion-types" }
 axion-module = { path = "../axion-module" }
+axion-borrow = { path = "../axion-borrow" }
+axion-mono = { path = "../axion-mono" }
 axion-codegen = { path = "../axion-codegen" }
 serde_json = { workspace = true }

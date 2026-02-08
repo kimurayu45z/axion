@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use axion_mono::output::MonoOutput;
 use axion_resolve::def_id::DefId;
 use axion_resolve::ResolveOutput;
 use axion_types::env::TypeEnv;
+use axion_types::ty::Ty;
 use axion_types::TypeCheckOutput;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -29,6 +31,14 @@ pub struct CodegenCtx<'ctx> {
     /// Loop context for break/continue
     pub loop_exit_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     pub loop_header_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Counter for generating unique closure names
+    pub closure_counter: u32,
+    /// Monomorphization output (specialized functions).
+    pub mono_output: Option<&'ctx MonoOutput>,
+    /// Mangled name → LLVM FunctionValue for specialized functions.
+    pub mono_fn_values: HashMap<String, FunctionValue<'ctx>>,
+    /// Current type substitution (active when compiling a specialized function body).
+    pub current_subst: HashMap<DefId, Ty>,
 }
 
 impl<'ctx> CodegenCtx<'ctx> {
@@ -38,6 +48,7 @@ impl<'ctx> CodegenCtx<'ctx> {
         resolved: &'ctx ResolveOutput,
         type_check: &'ctx TypeCheckOutput,
         type_env: &'ctx TypeEnv,
+        mono_output: Option<&'ctx MonoOutput>,
     ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
@@ -55,6 +66,10 @@ impl<'ctx> CodegenCtx<'ctx> {
             string_literals: HashMap::new(),
             loop_exit_block: None,
             loop_header_block: None,
+            closure_counter: 0,
+            mono_output,
+            mono_fn_values: HashMap::new(),
+            current_subst: HashMap::new(),
         }
     }
 }

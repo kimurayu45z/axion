@@ -1,13 +1,15 @@
 use axion_resolve::def_id::{DefId, SymbolKind};
 use axion_types::ty::{PrimTy, Ty};
 use axion_syntax::*;
+use inkwell::types::BasicType;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
 use inkwell::IntPredicate;
 use inkwell::FloatPredicate;
+use inkwell::AddressSpace;
 
 use crate::context::CodegenCtx;
 use crate::intrinsics::build_printf_call;
-use crate::layout::{is_void_ty, ty_to_llvm, variant_struct_type, enum_max_payload_bytes};
+use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata, variant_struct_type, enum_max_payload_bytes};
 use crate::stmt::compile_stmt;
 
 /// Compile an expression and return its LLVM value (None for void expressions).
@@ -61,7 +63,7 @@ pub fn compile_expr<'ctx>(
             None
         }
         ExprKind::Range { .. } => None,
-        ExprKind::Closure { .. } => None,
+        ExprKind::Closure { params, body } => compile_closure(ctx, expr, params, body),
         ExprKind::Assert { cond, message } => {
             compile_assert(ctx, cond, message.as_deref());
             None
@@ -198,11 +200,17 @@ fn compile_ident<'ctx>(
 }
 
 fn get_expr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
-    ctx.type_check
+    let ty = ctx
+        .type_check
         .expr_types
         .get(&expr.span.start)
         .cloned()
-        .unwrap_or(Ty::Unit)
+        .unwrap_or(Ty::Unit);
+    if ctx.current_subst.is_empty() {
+        ty
+    } else {
+        axion_mono::specialize::substitute(&ty, &ctx.current_subst)
+    }
 }
 
 fn compile_binop<'ctx>(
@@ -544,6 +552,32 @@ fn compile_call<'ctx>(
         }
     }
 
+    // Check for monomorphized TypeApp call: f[T](...)
+    if let ExprKind::TypeApp { expr: inner, type_args } = &func.kind {
+        if let Some(specialized_fn) = resolve_mono_call(ctx, inner, type_args) {
+            // Compile arguments.
+            let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
+            for arg in args {
+                if let Some(val) = compile_expr(ctx, &arg.expr) {
+                    compiled_args.push(val.into());
+                }
+            }
+            let ret_ty = get_expr_ty(ctx, call_expr);
+            if is_void_ty(&ret_ty) {
+                ctx.builder
+                    .build_call(specialized_fn, &compiled_args, "call")
+                    .unwrap();
+                return None;
+            } else {
+                let call_val = ctx
+                    .builder
+                    .build_call(specialized_fn, &compiled_args, "call")
+                    .unwrap();
+                return call_val.try_as_basic_value().left();
+            }
+        }
+    }
+
     // Resolve the function DefId.
     let def_id = match &func.kind {
         ExprKind::Ident(_) => ctx.resolved.resolutions.get(&func.span.start).copied(),
@@ -551,10 +585,6 @@ fn compile_call<'ctx>(
     };
 
     let fn_value = def_id.and_then(|did| ctx.functions.get(&did).copied());
-
-    let Some(fn_value) = fn_value else {
-        return None;
-    };
 
     // Compile arguments.
     let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
@@ -566,17 +596,665 @@ fn compile_call<'ctx>(
 
     // Check if return type is void.
     let ret_ty = get_expr_ty(ctx, call_expr);
-    if is_void_ty(&ret_ty) {
-        ctx.builder
-            .build_call(fn_value, &compiled_args, "call")
-            .unwrap();
-        None
+
+    if let Some(fn_value) = fn_value {
+        // Direct call to a known function.
+        if is_void_ty(&ret_ty) {
+            ctx.builder
+                .build_call(fn_value, &compiled_args, "call")
+                .unwrap();
+            None
+        } else {
+            let call_val = ctx
+                .builder
+                .build_call(fn_value, &compiled_args, "call")
+                .unwrap();
+            call_val.try_as_basic_value().left()
+        }
     } else {
-        let call_val = ctx
+        // Indirect call: the callee is a variable holding a function pointer
+        // or a capturing closure struct { fn_ptr, env_ptr }.
+        // Note: we cannot use get_expr_ty(func) because the call expr and func ident
+        // share the same span.start, so expr_types would give the call result type.
+        // Instead, look up the callee's type via its DefId in type_env, or reconstruct
+        // the Fn type from the call arg types and return type.
+        let callee_ty = def_id
+            .and_then(|did| ctx.type_env.defs.get(&did))
+            .map(|info| info.ty.clone())
+            .unwrap_or_else(|| {
+                // Reconstruct Fn type from arg types and return type.
+                let arg_tys: Vec<Ty> = args.iter().map(|a| get_expr_ty(ctx, &a.expr)).collect();
+                Ty::Fn { params: arg_tys, ret: Box::new(ret_ty.clone()) }
+            });
+
+        // Unwrap the function through TypeApp if needed.
+        let actual_func = match &func.kind {
+            ExprKind::TypeApp { expr: inner, .. } => inner.as_ref(),
+            _ => func,
+        };
+
+        let callee_val = compile_expr(ctx, actual_func)?;
+
+        // Build LLVM function type from the callee type.
+        if let Ty::Fn { params, ret } = &callee_ty {
+            // Check if callee is a capturing closure struct { fn_ptr, env_ptr }
+            // by checking if the LLVM value is a struct (not a pointer).
+            if callee_val.is_struct_value() {
+                let closure_struct = callee_val.into_struct_value();
+                let fn_ptr = ctx
+                    .builder
+                    .build_extract_value(closure_struct, 0, "closure_fn")
+                    .unwrap()
+                    .into_pointer_value();
+                let env_ptr = ctx
+                    .builder
+                    .build_extract_value(closure_struct, 1, "closure_env")
+                    .unwrap();
+
+                // Build fn type with env_ptr as first arg.
+                let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+                let mut fn_param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = vec![ptr_ty.into()];
+                for t in params {
+                    fn_param_types.push(ty_to_llvm_metadata(ctx, t));
+                }
+
+                let fn_type = if is_void_ty(ret) {
+                    ctx.context.void_type().fn_type(&fn_param_types, false)
+                } else {
+                    ty_to_llvm(ctx, ret).fn_type(&fn_param_types, false)
+                };
+
+                // Prepend env_ptr to args.
+                let mut full_args: Vec<BasicMetadataValueEnum> = vec![env_ptr.into()];
+                full_args.extend(compiled_args);
+
+                let call_val = ctx
+                    .builder
+                    .build_indirect_call(fn_type, fn_ptr, &full_args, "closure_call")
+                    .unwrap();
+
+                if is_void_ty(&ret_ty) {
+                    None
+                } else {
+                    call_val.try_as_basic_value().left()
+                }
+            } else {
+                // Non-capturing closure or function pointer: simple indirect call.
+                let fn_ptr = callee_val.into_pointer_value();
+
+                let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
+                    .iter()
+                    .map(|t| ty_to_llvm_metadata(ctx, t))
+                    .collect();
+
+                let fn_type = if is_void_ty(ret) {
+                    ctx.context.void_type().fn_type(&param_types, false)
+                } else {
+                    ty_to_llvm(ctx, ret).fn_type(&param_types, false)
+                };
+
+                let call_val = ctx
+                    .builder
+                    .build_indirect_call(fn_type, fn_ptr, &compiled_args, "indirect_call")
+                    .unwrap();
+
+                if is_void_ty(&ret_ty) {
+                    None
+                } else {
+                    call_val.try_as_basic_value().left()
+                }
+            }
+        } else {
+            None
+        }
+    }
+}
+
+/// Compile a closure expression.
+///
+/// Non-capturing closures are compiled as hidden LLVM functions and return a function pointer.
+/// Capturing closures allocate an environment struct on the heap and return a {fn_ptr, env_ptr} pair.
+fn compile_closure<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    expr: &Expr,
+    params: &[ClosureParam],
+    body: &[Stmt],
+) -> Option<BasicValueEnum<'ctx>> {
+    let closure_ty = get_expr_ty(ctx, expr);
+    let (param_tys, ret_ty) = match &closure_ty {
+        Ty::Fn { params, ret } => (params.clone(), (**ret).clone()),
+        _ => return None,
+    };
+
+    // Determine which outer variables are captured.
+    let mut captures: Vec<(DefId, Ty)> = Vec::new();
+
+    // Collect DefIds of closure params so we can exclude them.
+    let closure_param_def_ids: Vec<DefId> = params
+        .iter()
+        .filter_map(|p| ctx.resolved.resolutions.get(&p.span.start).copied())
+        .collect();
+
+    // Scan closure body for identifiers that reference outer locals.
+    collect_captures(ctx, body, &closure_param_def_ids, &mut captures);
+
+    // Generate a unique name for the closure function.
+    let closure_name = format!("__closure_{}", ctx.closure_counter);
+    ctx.closure_counter += 1;
+
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+
+    if captures.is_empty() {
+        // --- Non-capturing closure: compile as a plain function, return fn ptr ---
+
+        let llvm_param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = param_tys
+            .iter()
+            .map(|t| ty_to_llvm_metadata(ctx, t))
+            .collect();
+
+        let fn_type = if is_void_ty(&ret_ty) {
+            ctx.context.void_type().fn_type(&llvm_param_types, false)
+        } else {
+            ty_to_llvm(ctx, &ret_ty).fn_type(&llvm_param_types, false)
+        };
+
+        let fn_value = ctx.module.add_function(&closure_name, fn_type, None);
+
+        // Save current builder state.
+        let saved_block = ctx.builder.get_insert_block();
+        let saved_locals = ctx.locals.clone();
+        let saved_local_types = ctx.local_types.clone();
+        let saved_loop_exit = ctx.loop_exit_block.take();
+        let saved_loop_header = ctx.loop_header_block.take();
+
+        // Create entry block for the closure function.
+        let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
+        ctx.builder.position_at_end(entry_bb);
+        ctx.locals.clear();
+        ctx.local_types.clear();
+
+        // Alloca params.
+        for (i, param) in params.iter().enumerate() {
+            let param_sym = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::ClosureParam && s.span == param.span);
+            if let Some(sym) = param_sym {
+                if let Some(param_val) = fn_value.get_nth_param(i as u32) {
+                    let val_ty = param_val.get_type();
+                    let alloca = ctx.builder.build_alloca(val_ty, &param.name).unwrap();
+                    ctx.builder.build_store(alloca, param_val).unwrap();
+                    ctx.locals.insert(sym.def_id, alloca);
+                    ctx.local_types.insert(sym.def_id, val_ty);
+                }
+            }
+        }
+
+        // Compile body.
+        let mut last_val = None;
+        for (i, stmt) in body.iter().enumerate() {
+            let is_last = i == body.len() - 1;
+            if is_last {
+                if let StmtKind::Expr(e) = &stmt.kind {
+                    last_val = compile_expr(ctx, e);
+                } else {
+                    compile_stmt(ctx, stmt);
+                }
+            } else {
+                compile_stmt(ctx, stmt);
+            }
+            if ctx.builder.get_insert_block().unwrap().get_terminator().is_some() {
+                break;
+            }
+        }
+
+        // Insert return.
+        if ctx.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else if let Some(val) = last_val {
+                ctx.builder.build_return(Some(&val)).unwrap();
+            } else {
+                let ret_llvm = ty_to_llvm(ctx, &ret_ty);
+                ctx.builder.build_return(Some(&ret_llvm.const_zero())).unwrap();
+            }
+        }
+
+        // Restore builder state.
+        ctx.locals = saved_locals;
+        ctx.local_types = saved_local_types;
+        ctx.loop_exit_block = saved_loop_exit;
+        ctx.loop_header_block = saved_loop_header;
+        if let Some(bb) = saved_block {
+            ctx.builder.position_at_end(bb);
+        }
+
+        // Return the function pointer.
+        Some(fn_value.as_global_value().as_pointer_value().into())
+    } else {
+        // --- Capturing closure: env struct + hidden function ---
+
+        // Build env struct type from captured variable types.
+        let env_field_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = captures
+            .iter()
+            .map(|(_, ty)| ty_to_llvm(ctx, ty))
+            .collect();
+        let env_struct_ty = ctx.context.struct_type(&env_field_types, false);
+
+        // Hidden function takes (env_ptr, params...).
+        let mut fn_param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = vec![ptr_ty.into()];
+        for t in &param_tys {
+            fn_param_types.push(ty_to_llvm_metadata(ctx, t));
+        }
+
+        let fn_type = if is_void_ty(&ret_ty) {
+            ctx.context.void_type().fn_type(&fn_param_types, false)
+        } else {
+            ty_to_llvm(ctx, &ret_ty).fn_type(&fn_param_types, false)
+        };
+
+        let fn_value = ctx.module.add_function(&closure_name, fn_type, None);
+
+        // Save state.
+        let saved_block = ctx.builder.get_insert_block();
+        let saved_locals = ctx.locals.clone();
+        let saved_local_types = ctx.local_types.clone();
+        let saved_loop_exit = ctx.loop_exit_block.take();
+        let saved_loop_header = ctx.loop_header_block.take();
+
+        let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
+        ctx.builder.position_at_end(entry_bb);
+        ctx.locals.clear();
+        ctx.local_types.clear();
+
+        // Load captures from env_ptr (arg 0).
+        let env_ptr = fn_value.get_nth_param(0).unwrap().into_pointer_value();
+        for (i, (cap_def_id, cap_ty)) in captures.iter().enumerate() {
+            let field_ptr = ctx
+                .builder
+                .build_struct_gep(env_struct_ty, env_ptr, i as u32, "cap_ptr")
+                .unwrap();
+            let field_llvm_ty = ty_to_llvm(ctx, cap_ty);
+            let loaded = ctx
+                .builder
+                .build_load(field_llvm_ty, field_ptr, "cap_load")
+                .unwrap();
+            let alloca = ctx.builder.build_alloca(field_llvm_ty, "cap_local").unwrap();
+            ctx.builder.build_store(alloca, loaded).unwrap();
+            ctx.locals.insert(*cap_def_id, alloca);
+            ctx.local_types.insert(*cap_def_id, field_llvm_ty);
+        }
+
+        // Alloca closure params (starting from arg index 1).
+        for (i, param) in params.iter().enumerate() {
+            let param_sym = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::ClosureParam && s.span == param.span);
+            if let Some(sym) = param_sym {
+                if let Some(param_val) = fn_value.get_nth_param((i + 1) as u32) {
+                    let val_ty = param_val.get_type();
+                    let alloca = ctx.builder.build_alloca(val_ty, &param.name).unwrap();
+                    ctx.builder.build_store(alloca, param_val).unwrap();
+                    ctx.locals.insert(sym.def_id, alloca);
+                    ctx.local_types.insert(sym.def_id, val_ty);
+                }
+            }
+        }
+
+        // Compile body.
+        let mut last_val = None;
+        for (i, stmt) in body.iter().enumerate() {
+            let is_last = i == body.len() - 1;
+            if is_last {
+                if let StmtKind::Expr(e) = &stmt.kind {
+                    last_val = compile_expr(ctx, e);
+                } else {
+                    compile_stmt(ctx, stmt);
+                }
+            } else {
+                compile_stmt(ctx, stmt);
+            }
+            if ctx.builder.get_insert_block().unwrap().get_terminator().is_some() {
+                break;
+            }
+        }
+
+        if ctx.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else if let Some(val) = last_val {
+                ctx.builder.build_return(Some(&val)).unwrap();
+            } else {
+                let ret_llvm = ty_to_llvm(ctx, &ret_ty);
+                ctx.builder.build_return(Some(&ret_llvm.const_zero())).unwrap();
+            }
+        }
+
+        // Restore state.
+        ctx.locals = saved_locals;
+        ctx.local_types = saved_local_types;
+        ctx.loop_exit_block = saved_loop_exit;
+        ctx.loop_header_block = saved_loop_header;
+        if let Some(bb) = saved_block {
+            ctx.builder.position_at_end(bb);
+        }
+
+        // Allocate environment struct and store captured values.
+        let malloc = ctx.module.get_function("malloc")?;
+        let env_size = env_field_types.iter().map(|t| estimate_basic_type_size(*t)).sum::<u64>();
+        let env_size_val = ctx.context.i64_type().const_int(env_size.max(1), false);
+        let raw_ptr = ctx
             .builder
-            .build_call(fn_value, &compiled_args, "call")
-            .unwrap();
-        call_val.try_as_basic_value().left()
+            .build_call(malloc, &[env_size_val.into()], "env_alloc")
+            .unwrap()
+            .try_as_basic_value()
+            .left()?
+            .into_pointer_value();
+
+        // Store each captured value into the environment.
+        for (i, (cap_def_id, cap_ty)) in captures.iter().enumerate() {
+            let field_ptr = ctx
+                .builder
+                .build_struct_gep(env_struct_ty, raw_ptr, i as u32, "env_field_ptr")
+                .unwrap();
+            // Load the captured variable's current value.
+            if let Some(&alloca) = ctx.locals.get(cap_def_id) {
+                let field_llvm_ty = ty_to_llvm(ctx, cap_ty);
+                let val = ctx.builder.build_load(field_llvm_ty, alloca, "cap_val").unwrap();
+                ctx.builder.build_store(field_ptr, val).unwrap();
+            }
+        }
+
+        // Build the closure struct: { fn_ptr, env_ptr }.
+        let closure_struct_ty = ctx.context.struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        let mut closure_val = closure_struct_ty.const_zero();
+        closure_val = ctx
+            .builder
+            .build_insert_value(closure_val, fn_value.as_global_value().as_pointer_value(), 0, "fn_ptr")
+            .unwrap()
+            .into_struct_value();
+        closure_val = ctx
+            .builder
+            .build_insert_value(closure_val, raw_ptr, 1, "env_ptr")
+            .unwrap()
+            .into_struct_value();
+
+        Some(closure_val.into())
+    }
+}
+
+/// Resolve a monomorphized call: look up the specialized function for a TypeApp call.
+/// Returns the LLVM FunctionValue if a specialization exists.
+fn resolve_mono_call<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    inner: &Expr,
+    type_args: &[TypeExpr],
+) -> Option<inkwell::values::FunctionValue<'ctx>> {
+    let mono = ctx.mono_output?;
+
+    // Get the function DefId from the inner ident.
+    let fn_def_id = match &inner.kind {
+        ExprKind::Ident(_) => ctx.resolved.resolutions.get(&inner.span.start).copied()?,
+        _ => return None,
+    };
+
+    // Convert TypeExpr to concrete Ty.
+    let concrete_args: Vec<Ty> = type_args
+        .iter()
+        .map(|ta| {
+            let span = type_expr_span(ta);
+            ctx.type_check
+                .expr_types
+                .get(&span.start)
+                .cloned()
+                .unwrap_or_else(|| lower_type_arg_codegen(ta, ctx.resolved))
+        })
+        .collect();
+
+    // Look up mangled name.
+    let mangled_name = mono.lookup(fn_def_id, &concrete_args)?;
+    ctx.mono_fn_values.get(mangled_name).copied()
+}
+
+/// Extract the span from a TypeExpr.
+fn type_expr_span(te: &TypeExpr) -> Span {
+    match te {
+        TypeExpr::Named { span, .. }
+        | TypeExpr::Tuple { span, .. }
+        | TypeExpr::Fn { span, .. }
+        | TypeExpr::Ref { span, .. }
+        | TypeExpr::Slice { span, .. }
+        | TypeExpr::Dyn { span, .. }
+        | TypeExpr::Active { span, .. }
+        | TypeExpr::DimApply { span, .. } => *span,
+    }
+}
+
+/// Lower a TypeExpr to a Ty for type argument lookup (fallback when not in expr_types).
+fn lower_type_arg_codegen(te: &TypeExpr, resolved: &axion_resolve::ResolveOutput) -> Ty {
+    use axion_types::ty::PrimTy;
+    match te {
+        TypeExpr::Named { name, .. } => {
+            if let Some(prim) = PrimTy::from_name(name) {
+                return Ty::Prim(prim);
+            }
+            if let Some(&def_id) = resolved.resolutions.get(&type_expr_span(te).start) {
+                let sym = resolved.symbols.iter().find(|s| s.def_id == def_id);
+                if let Some(sym) = sym {
+                    match sym.kind {
+                        axion_resolve::def_id::SymbolKind::Struct => {
+                            return Ty::Struct { def_id, type_args: vec![] }
+                        }
+                        axion_resolve::def_id::SymbolKind::Enum => {
+                            return Ty::Enum { def_id, type_args: vec![] }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ty::Error
+        }
+        TypeExpr::Ref { inner, .. } => {
+            Ty::Ref(Box::new(lower_type_arg_codegen(inner, resolved)))
+        }
+        _ => Ty::Error,
+    }
+}
+
+/// Estimate size of a basic type in bytes (for malloc).
+fn estimate_basic_type_size(ty: inkwell::types::BasicTypeEnum) -> u64 {
+    match ty {
+        inkwell::types::BasicTypeEnum::IntType(i) => ((i.get_bit_width() + 7) / 8) as u64,
+        inkwell::types::BasicTypeEnum::FloatType(_) => 8,
+        inkwell::types::BasicTypeEnum::PointerType(_) => 8,
+        inkwell::types::BasicTypeEnum::StructType(s) => {
+            (0..s.count_fields())
+                .map(|i| estimate_basic_type_size(s.get_field_type_at_index(i).unwrap()))
+                .sum()
+        }
+        inkwell::types::BasicTypeEnum::ArrayType(a) => {
+            estimate_basic_type_size(a.get_element_type()) * a.len() as u64
+        }
+        inkwell::types::BasicTypeEnum::VectorType(_) => 16,
+    }
+}
+
+/// Collect captured variables from closure body.
+/// Finds identifiers that resolve to outer DefIds not in `closure_param_ids`.
+fn collect_captures<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    body: &[Stmt],
+    closure_param_ids: &[DefId],
+    captures: &mut Vec<(DefId, Ty)>,
+) {
+    let mut seen = std::collections::HashSet::new();
+    for stmt in body {
+        collect_captures_stmt(ctx, stmt, closure_param_ids, captures, &mut seen);
+    }
+}
+
+fn collect_captures_stmt<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    stmt: &Stmt,
+    closure_param_ids: &[DefId],
+    captures: &mut Vec<(DefId, Ty)>,
+    seen: &mut std::collections::HashSet<DefId>,
+) {
+    match &stmt.kind {
+        StmtKind::Let { value, .. } => {
+            collect_captures_expr(ctx, value, closure_param_ids, captures, seen);
+        }
+        StmtKind::LetPattern { value, .. } => {
+            collect_captures_expr(ctx, value, closure_param_ids, captures, seen);
+        }
+        StmtKind::Assign { target, value } => {
+            collect_captures_expr(ctx, target, closure_param_ids, captures, seen);
+            collect_captures_expr(ctx, value, closure_param_ids, captures, seen);
+        }
+        StmtKind::Expr(e) => {
+            collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+        }
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+            }
+        }
+        StmtKind::Break(opt) => {
+            if let Some(e) = opt {
+                collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+            }
+        }
+        StmtKind::Continue => {}
+        StmtKind::Assert { cond, message } => {
+            collect_captures_expr(ctx, cond, closure_param_ids, captures, seen);
+            if let Some(m) = message {
+                collect_captures_expr(ctx, m, closure_param_ids, captures, seen);
+            }
+        }
+    }
+}
+
+fn collect_captures_expr<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    expr: &Expr,
+    closure_param_ids: &[DefId],
+    captures: &mut Vec<(DefId, Ty)>,
+    seen: &mut std::collections::HashSet<DefId>,
+) {
+    match &expr.kind {
+        ExprKind::Ident(_) => {
+            if let Some(&def_id) = ctx.resolved.resolutions.get(&expr.span.start) {
+                // Check if this is an outer local (not a closure param, not a function).
+                if !closure_param_ids.contains(&def_id)
+                    && ctx.locals.contains_key(&def_id)
+                    && !ctx.functions.contains_key(&def_id)
+                    && !seen.contains(&def_id)
+                {
+                    // Get the type of the captured variable.
+                    if let Some(info) = ctx.type_env.defs.get(&def_id) {
+                        captures.push((def_id, info.ty.clone()));
+                        seen.insert(def_id);
+                    } else if let Some(ty) = ctx.type_check.expr_types.get(&expr.span.start) {
+                        captures.push((def_id, ty.clone()));
+                        seen.insert(def_id);
+                    }
+                }
+            }
+        }
+        ExprKind::BinOp { lhs, rhs, .. } => {
+            collect_captures_expr(ctx, lhs, closure_param_ids, captures, seen);
+            collect_captures_expr(ctx, rhs, closure_param_ids, captures, seen);
+        }
+        ExprKind::UnaryOp { operand, .. } => {
+            collect_captures_expr(ctx, operand, closure_param_ids, captures, seen);
+        }
+        ExprKind::Call { func, args } => {
+            collect_captures_expr(ctx, func, closure_param_ids, captures, seen);
+            for arg in args {
+                collect_captures_expr(ctx, &arg.expr, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Field { expr: inner, .. } => {
+            collect_captures_expr(ctx, inner, closure_param_ids, captures, seen);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_captures_expr(ctx, cond, closure_param_ids, captures, seen);
+            for s in then_branch {
+                collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+            }
+            if let Some(els) = else_branch {
+                for s in els {
+                    collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+                }
+            }
+        }
+        ExprKind::While { cond, body } => {
+            collect_captures_expr(ctx, cond, closure_param_ids, captures, seen);
+            for s in body {
+                collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Block(stmts) => {
+            for s in stmts {
+                collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Ref(inner) => {
+            collect_captures_expr(ctx, inner, closure_param_ids, captures, seen);
+        }
+        ExprKind::TypeApp { expr: inner, .. } => {
+            collect_captures_expr(ctx, inner, closure_param_ids, captures, seen);
+        }
+        ExprKind::TupleLit(elems) => {
+            for e in elems {
+                collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Match { expr: scrutinee, arms } => {
+            collect_captures_expr(ctx, scrutinee, closure_param_ids, captures, seen);
+            for arm in arms {
+                for s in &arm.body {
+                    collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+                }
+            }
+        }
+        ExprKind::For { iter, body, .. } => {
+            collect_captures_expr(ctx, iter, closure_param_ids, captures, seen);
+            for s in body {
+                collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Range { start, end } => {
+            collect_captures_expr(ctx, start, closure_param_ids, captures, seen);
+            collect_captures_expr(ctx, end, closure_param_ids, captures, seen);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for f in fields {
+                collect_captures_expr(ctx, &f.value, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::StringInterp { parts } => {
+            for part in parts {
+                if let StringInterpPart::Expr(e) = part {
+                    collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+                }
+            }
+        }
+        ExprKind::Assert { cond, message } => {
+            collect_captures_expr(ctx, cond, closure_param_ids, captures, seen);
+            if let Some(m) = message {
+                collect_captures_expr(ctx, m, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Closure { body, .. } => {
+            for s in body {
+                collect_captures_stmt(ctx, s, closure_param_ids, captures, seen);
+            }
+        }
+        _ => {}
     }
 }
 

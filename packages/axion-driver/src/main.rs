@@ -80,8 +80,16 @@ fn cmd_check(args: &[String]) {
     diagnostics.extend(resolve_diags);
 
     // Type checking pass.
-    let (_types, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
+    let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
     diagnostics.extend(type_diags);
+
+    // Borrow checking pass.
+    let mut unify_check = axion_types::unify::UnifyContext::new();
+    let type_env_check = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify_check);
+    let borrow_diags = axion_borrow::borrow_check(
+        &ast, &resolved, &type_out, &type_env_check, file_path, &source,
+    );
+    diagnostics.extend(borrow_diags);
 
     if json_output {
         let output = DiagnosticOutput::new(diagnostics);
@@ -173,6 +181,14 @@ fn cmd_build(args: &[String]) {
     let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
     diagnostics.extend(type_diags);
 
+    // Borrow checking pass (before codegen).
+    let mut unify_borrow = axion_types::unify::UnifyContext::new();
+    let type_env_borrow = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify_borrow);
+    let borrow_diags = axion_borrow::borrow_check(
+        &ast, &resolved, &type_out, &type_env_borrow, file_path, &source,
+    );
+    diagnostics.extend(borrow_diags);
+
     let has_errors = diagnostics
         .iter()
         .any(|d| d.severity == axion_diagnostics::Severity::Error);
@@ -204,13 +220,16 @@ fn cmd_build(args: &[String]) {
     let mut unify = axion_types::unify::UnifyContext::new();
     let type_env = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify);
 
+    // Monomorphization pass.
+    let mono_output = axion_mono::monomorphize(&ast, &resolved, &type_out, &type_env);
+
     let module_name = Path::new(file_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main");
 
     if emit_llvm_ir {
-        let ir = axion_codegen::compile_to_ir(&ast, &resolved, &type_out, &type_env, module_name);
+        let ir = axion_codegen::compile_to_ir(&ast, &resolved, &type_out, &type_env, module_name, Some(&mono_output));
         let ir_path = format!("{}.ll", module_name);
         match std::fs::write(&ir_path, &ir) {
             Ok(()) => println!("Wrote {ir_path}"),
@@ -231,6 +250,7 @@ fn cmd_build(args: &[String]) {
         &type_env,
         module_name,
         &output_path,
+        Some(&mono_output),
     ) {
         Ok(()) => {
             println!("Built {output_path}");

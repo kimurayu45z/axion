@@ -9,10 +9,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
+name = "axion-borrow"
+version = "0.1.0"
+dependencies = [
+ "axion-diagnostics",
+ "axion-parser",
+ "axion-resolve",
+ "axion-syntax",
+ "axion-types",
+]
+
+[[package]]
 name = "axion-codegen"
 version = "0.1.0"
 dependencies = [
  "axion-diagnostics",
+ "axion-mono",
  "axion-parser",
  "axion-resolve",
  "axion-syntax",
@@ -34,10 +46,12 @@ dependencies = [
 name = "axion-driver"
 version = "0.1.0"
 dependencies = [
+ "axion-borrow",
  "axion-codegen",
  "axion-diagnostics",
  "axion-lexer",
  "axion-module",
+ "axion-mono",
  "axion-parser",
  "axion-resolve",
  "axion-syntax",
@@ -55,6 +69,17 @@ dependencies = [
 
 [[package]]
 name = "axion-module"
+version = "0.1.0"
+dependencies = [
+ "axion-diagnostics",
+ "axion-parser",
+ "axion-resolve",
+ "axion-syntax",
+ "axion-types",
+]
+
+[[package]]
+name = "axion-mono"
 version = "0.1.0"
 dependencies = [
  "axion-diagnostics",

@@ -8,6 +8,8 @@ members = [
     "packages/axion-types",
     "packages/axion-module",
     "packages/axion-codegen",
+    "packages/axion-borrow",
+    "packages/axion-mono",
     "packages/axion-driver",
 ]
 resolver = "3"

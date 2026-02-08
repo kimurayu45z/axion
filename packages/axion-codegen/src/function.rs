@@ -156,3 +156,145 @@ fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span)
         }
     }
 }
+
+/// Declare all specialized (monomorphized) functions.
+pub fn declare_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
+    let mono = match ctx.mono_output {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Clone specialized_fns to avoid borrow issues.
+    let specs: Vec<_> = mono.specialized_fns.iter().map(|s| {
+        (s.mangled_name.clone(), s.fn_ty.clone())
+    }).collect();
+
+    for (mangled_name, fn_ty) in &specs {
+        let Ty::Fn { params, ret } = fn_ty else { continue };
+
+        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
+            .iter()
+            .map(|t| ty_to_llvm_metadata(ctx, t))
+            .collect();
+
+        let fn_type = if is_void_ty(ret) {
+            ctx.context.void_type().fn_type(&param_types, false)
+        } else {
+            ty_to_llvm(ctx, ret).fn_type(&param_types, false)
+        };
+
+        let fn_value = ctx.module.add_function(mangled_name, fn_type, None);
+        ctx.mono_fn_values.insert(mangled_name.clone(), fn_value);
+    }
+}
+
+/// Compile bodies of all specialized (monomorphized) functions.
+pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
+    let mono = match ctx.mono_output {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Clone the data we need to avoid borrow conflicts.
+    let specs: Vec<_> = mono.specialized_fns.iter().map(|s| {
+        (
+            s.mangled_name.clone(),
+            s.fn_ty.clone(),
+            s.body.clone(),
+            s.params.clone(),
+            s.subst.clone(),
+        )
+    }).collect();
+
+    for (mangled_name, fn_ty, body, params, subst) in &specs {
+        let Some(&fn_value) = ctx.mono_fn_values.get(mangled_name.as_str()) else {
+            continue;
+        };
+
+        let ret_ty = match fn_ty {
+            Ty::Fn { ret, .. } => (**ret).clone(),
+            _ => Ty::Unit,
+        };
+
+        // Set current substitution so get_expr_ty applies it.
+        ctx.current_subst = subst.clone();
+
+        // Create entry basic block.
+        let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
+        ctx.builder.position_at_end(entry_bb);
+
+        // Clear locals for this function.
+        ctx.locals.clear();
+        ctx.local_types.clear();
+
+        // Alloca params as local variables.
+        for (i, param) in params.iter().enumerate() {
+            let param_sym = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::Param && s.span == param.span);
+
+            if let Some(sym) = param_sym {
+                let param_val = fn_value.get_nth_param(i as u32);
+                if let Some(param_val) = param_val {
+                    let val_ty = param_val.get_type();
+                    let alloca = ctx
+                        .builder
+                        .build_alloca(val_ty, &param.name)
+                        .unwrap();
+                    ctx.builder.build_store(alloca, param_val).unwrap();
+                    ctx.locals.insert(sym.def_id, alloca);
+                    ctx.local_types.insert(sym.def_id, val_ty);
+                }
+            }
+        }
+
+        // Compile body statements.
+        let mut last_val = None;
+        for (i, stmt) in body.iter().enumerate() {
+            let is_last = i == body.len() - 1;
+            if is_last {
+                if let StmtKind::Expr(expr) = &stmt.kind {
+                    last_val = compile_expr(ctx, expr);
+                } else {
+                    compile_stmt(ctx, stmt);
+                }
+            } else {
+                compile_stmt(ctx, stmt);
+            }
+
+            if ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        // Insert return if not already terminated.
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else if let Some(val) = last_val {
+                ctx.builder.build_return(Some(&val)).unwrap();
+            } else {
+                let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
+                let zero = ret_llvm_ty.const_zero();
+                ctx.builder.build_return(Some(&zero)).unwrap();
+            }
+        }
+
+        // Clear substitution.
+        ctx.current_subst.clear();
+    }
+}

@@ -29,8 +29,10 @@ fn compile_and_run(src: &str) -> RunResult {
     let mut unify = UnifyContext::new();
     let type_env = axion_types::env::TypeEnv::build(&sf, &resolved, &mut unify);
 
+    let mono_output = axion_mono::monomorphize(&sf, &resolved, &type_out, &type_env);
+
     let obj_bytes =
-        compile_to_object(&sf, &resolved, &type_out, &type_env, "test").expect("Compilation failed");
+        compile_to_object(&sf, &resolved, &type_out, &type_env, "test", Some(&mono_output)).expect("Compilation failed");
 
     // Use unique filenames per test to avoid race conditions.
     let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -72,7 +74,8 @@ fn compile_ir(src: &str) -> String {
     let (type_out, _) = axion_types::type_check(&sf, &resolved, "test.ax", src);
     let mut unify = UnifyContext::new();
     let type_env = axion_types::env::TypeEnv::build(&sf, &resolved, &mut unify);
-    compile_to_ir(&sf, &resolved, &type_out, &type_env, "test")
+    let mono_output = axion_mono::monomorphize(&sf, &resolved, &type_out, &type_env);
+    compile_to_ir(&sf, &resolved, &type_out, &type_env, "test", Some(&mono_output))
 }
 
 #[test]
@@ -267,4 +270,81 @@ fn main() -> i64
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 12);
+}
+
+#[test]
+fn compile_closure_basic() {
+    let src = "\
+fn main() -> i64
+    let add = |x: i64, y: i64| x + y
+    add(3, 4)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 7);
+}
+
+#[test]
+fn compile_closure_capture() {
+    let src = "\
+fn main() -> i64
+    let a: i64 = 10
+    let f = |x: i64| x + a
+    f(5)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn compile_closure_as_arg() {
+    let src = "\
+fn apply(f: Fn(i64) -> i64, x: i64) -> i64
+    f(x)
+
+fn main() -> i64
+    let double = |x: i64| x * 2
+    apply(double, 21)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_generic_identity() {
+    let src = "\
+fn id[T](x: T) -> T
+    x
+
+fn main() -> i64
+    id[i64](42)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_generic_two_instantiations() {
+    let src = "\
+fn first[T](x: T, y: T) -> T
+    x
+
+fn main() -> i64
+    let a = first[i64](10, 20)
+    a
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn compile_generic_with_arithmetic() {
+    let src = "\
+fn double[T](x: T) -> T
+    x + x
+
+fn main() -> i64
+    double[i64](21)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
 }

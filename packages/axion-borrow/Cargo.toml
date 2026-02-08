@@ -1,5 +1,5 @@
 [package]
-name = "axion-codegen"
+name = "axion-borrow"
 version.workspace = true
 edition.workspace = true
 
@@ -8,9 +8,6 @@ axion-syntax = { path = "../axion-syntax" }
 axion-resolve = { path = "../axion-resolve" }
 axion-types = { path = "../axion-types" }
 axion-diagnostics = { path = "../axion-diagnostics" }
-axion-mono = { path = "../axion-mono" }
-inkwell = { version = "0.5", features = ["llvm18-0"] }
-llvm-sys = "180"
 
 [dev-dependencies]
 axion-parser = { path = "../axion-parser" }
