@@ -27,6 +27,10 @@ pub(crate) struct InferCtx<'a> {
     pub current_return_ty: Ty,
     /// Self type for methods (None for free functions).
     pub self_ty: Option<Ty>,
+    /// Effects declared on the current function being checked.
+    pub current_effects: Vec<String>,
+    /// Effects that are handled in the current scope (via handle expressions).
+    pub handled_effects: Vec<String>,
 }
 
 impl<'a> InferCtx<'a> {
@@ -41,7 +45,7 @@ impl<'a> InferCtx<'a> {
         match &expr.kind {
             ExprKind::IntLit(_, suffix) => self.infer_int_lit(suffix),
             ExprKind::FloatLit(_, suffix) => self.infer_float_lit(suffix),
-            ExprKind::StringLit(_) => Ty::Error, // String type deferred
+            ExprKind::StringLit(_) => Ty::Prim(PrimTy::Str),
             ExprKind::CharLit(_) => Ty::Prim(PrimTy::Char),
             ExprKind::BoolLit(_) => Ty::Prim(PrimTy::Bool),
             ExprKind::Ident(_) => self.infer_ident(expr),
@@ -94,10 +98,24 @@ impl<'a> InferCtx<'a> {
                 Ty::Unit
             }
             ExprKind::Handle { expr: inner, arms } => {
+                // Extract effect names from handle arms and add them to handled_effects.
+                let mut new_handled: Vec<String> = Vec::new();
+                for arm in arms {
+                    new_handled.push(arm.effect.clone());
+                }
+                // Push handled effects before inferring inner expression.
+                let prev_handled = self.handled_effects.clone();
+                self.handled_effects.extend(new_handled);
+
                 let ty = self.infer_expr(inner);
+
+                // Infer arm bodies.
                 for arm in arms {
                     self.infer_stmts(&arm.body);
                 }
+
+                // Restore handled effects.
+                self.handled_effects = prev_handled;
                 ty
             }
             ExprKind::StringInterp { parts } => {
@@ -106,7 +124,7 @@ impl<'a> InferCtx<'a> {
                         self.infer_expr(e);
                     }
                 }
-                Ty::Error // String type deferred
+                Ty::Prim(PrimTy::Str)
             }
             ExprKind::MapLit(entries) => {
                 for entry in entries {
@@ -283,6 +301,12 @@ impl<'a> InferCtx<'a> {
                             ));
                         }
                     }
+
+                    // Check parameter modifiers.
+                    self.check_param_modifiers(func, args, span);
+
+                    // Check effects.
+                    self.check_call_effects(func, span);
                 } else {
                     // Built-in: just infer arg types without checking.
                     for arg in args {
@@ -515,11 +539,14 @@ impl<'a> InferCtx<'a> {
     }
 
     fn infer_match(&mut self, scrutinee: &Expr, arms: &[MatchArm], _span: Span) -> Ty {
-        let _scrutinee_ty = self.infer_expr(scrutinee);
+        let scrutinee_ty = self.infer_expr(scrutinee);
 
         // Infer all arm body types and unify them.
         let mut result_ty: Option<Ty> = None;
         for arm in arms {
+            // Type-check the pattern against the scrutinee type.
+            self.infer_pattern_bindings(&arm.pattern, &scrutinee_ty);
+
             // Infer guard if present.
             if let Some(guard) = &arm.guard {
                 let guard_ty = self.infer_expr(guard);
@@ -728,6 +755,17 @@ impl<'a> InferCtx<'a> {
                                 subst.insert(*param_def_id, arg_ty.clone());
                             }
 
+                            // Check interface bounds for each type parameter.
+                            for (param_def_id, arg_ty) in
+                                type_param_defs.iter().zip(ty_args.iter())
+                            {
+                                self.check_interface_bounds(
+                                    *param_def_id,
+                                    arg_ty,
+                                    _span,
+                                );
+                            }
+
                             // Apply substitution to the function type.
                             let new_params: Vec<Ty> =
                                 params.iter().map(|p| substitute(p, &subst)).collect();
@@ -918,29 +956,422 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    /// Distribute types to pattern bindings (simplified — full pattern typing deferred).
+    /// Distribute types to pattern bindings.
     fn infer_pattern_bindings(&mut self, pattern: &Pattern, ty: &Ty) {
+        let resolved_ty = self.unify.resolve(ty);
         match &pattern.kind {
             PatternKind::Ident(_) => {
                 if let Some(&def_id) = self.resolved.resolutions.get(&pattern.span.start) {
                     self.env.defs.insert(
                         def_id,
-                        crate::env::TypeInfo { ty: ty.clone() },
+                        crate::env::TypeInfo { ty: resolved_ty.clone() },
                     );
                 }
             }
             PatternKind::TuplePattern(pats) => {
-                if let Ty::Tuple(elems) = ty {
+                if let Ty::Tuple(elems) = &resolved_ty {
                     for (p, elem_ty) in pats.iter().zip(elems.iter()) {
                         self.infer_pattern_bindings(p, elem_ty);
                     }
+                } else if !matches!(resolved_ty, Ty::Error | Ty::Infer(_)) {
+                    self.diagnostics.push(errors::pattern_mismatch(
+                        &resolved_ty,
+                        self.file_name,
+                        pattern.span,
+                        self.source,
+                    ));
                 }
             }
             PatternKind::Wildcard => {}
-            _ => {
-                // Other patterns — deferred
+            PatternKind::Constructor { path, fields } => {
+                self.infer_constructor_pattern(path, fields, &resolved_ty, pattern.span);
+            }
+            PatternKind::Struct { name, fields, .. } => {
+                self.infer_struct_pattern(name, fields, &resolved_ty, pattern.span);
+            }
+            PatternKind::Literal(expr) => {
+                let lit_ty = self.infer_expr(expr);
+                if self.unify.unify(&resolved_ty, &lit_ty).is_err() {
+                    self.diagnostics.push(errors::pattern_mismatch(
+                        &resolved_ty,
+                        self.file_name,
+                        pattern.span,
+                        self.source,
+                    ));
+                }
+            }
+            PatternKind::Or(pats) => {
+                for p in pats {
+                    self.infer_pattern_bindings(p, &resolved_ty);
+                }
+            }
+            PatternKind::List(pats) => {
+                if let Ty::Slice(elem_ty) = &resolved_ty {
+                    for p in pats {
+                        if !matches!(p.kind, PatternKind::Rest(_)) {
+                            self.infer_pattern_bindings(p, elem_ty);
+                        } else if let PatternKind::Rest(Some(_)) = &p.kind {
+                            // Named rest binds to the slice type.
+                            self.infer_pattern_bindings(p, &resolved_ty);
+                        }
+                    }
+                } else if !matches!(resolved_ty, Ty::Error | Ty::Infer(_)) {
+                    self.diagnostics.push(errors::pattern_mismatch(
+                        &resolved_ty,
+                        self.file_name,
+                        pattern.span,
+                        self.source,
+                    ));
+                }
+            }
+            PatternKind::Rest(opt_name) => {
+                if opt_name.is_some() {
+                    if let Some(&def_id) = self.resolved.resolutions.get(&pattern.span.start) {
+                        self.env.defs.insert(
+                            def_id,
+                            crate::env::TypeInfo { ty: resolved_ty.clone() },
+                        );
+                    }
+                }
             }
         }
+    }
+
+    /// Type-check a Constructor pattern (e.g. `Shape.Circle(r)`).
+    fn infer_constructor_pattern(
+        &mut self,
+        path: &[String],
+        fields: &[Pattern],
+        scrutinee_ty: &Ty,
+        span: Span,
+    ) {
+        // path is e.g. ["Shape", "Circle"] — first element is enum name, last is variant name.
+        if path.len() < 2 {
+            return;
+        }
+        let variant_name = &path[path.len() - 1];
+
+        // Try to find the enum DefId from the scrutinee type or from the path.
+        let enum_def_id = match scrutinee_ty {
+            Ty::Enum { def_id, .. } => Some(*def_id),
+            _ => {
+                // Try to find enum by name from the first path element.
+                let enum_name = &path[0];
+                self.resolved
+                    .symbols
+                    .iter()
+                    .find(|s| &s.name == enum_name && s.kind == SymbolKind::Enum)
+                    .map(|s| s.def_id)
+            }
+        };
+
+        if let Some(enum_def_id) = enum_def_id {
+            // Unify scrutinee with the enum type.
+            let enum_ty = Ty::Enum {
+                def_id: enum_def_id,
+                type_args: vec![],
+            };
+            if self.unify.unify(scrutinee_ty, &enum_ty).is_err() {
+                self.diagnostics.push(errors::pattern_mismatch(
+                    scrutinee_ty,
+                    self.file_name,
+                    span,
+                    self.source,
+                ));
+                return;
+            }
+
+            // Look up variant fields.
+            if let Some(variants) = self.env.enum_variants.get(&enum_def_id).cloned() {
+                if let Some((_, _, variant_fields)) =
+                    variants.iter().find(|(name, _, _)| name == variant_name)
+                {
+                    // Distribute field types to sub-patterns.
+                    for (pat, (_field_name, field_ty)) in fields.iter().zip(variant_fields.iter()) {
+                        self.infer_pattern_bindings(pat, field_ty);
+                    }
+                } else {
+                    self.diagnostics.push(errors::pattern_mismatch(
+                        scrutinee_ty,
+                        self.file_name,
+                        span,
+                        self.source,
+                    ));
+                }
+            }
+        } else {
+            self.diagnostics.push(errors::pattern_mismatch(
+                scrutinee_ty,
+                self.file_name,
+                span,
+                self.source,
+            ));
+        }
+    }
+
+    /// Type-check a Struct pattern (e.g. `Point #{x, y}`).
+    fn infer_struct_pattern(
+        &mut self,
+        name: &str,
+        fields: &[FieldPattern],
+        scrutinee_ty: &Ty,
+        span: Span,
+    ) {
+        // Find the struct DefId.
+        let struct_def_id = match scrutinee_ty {
+            Ty::Struct { def_id, .. } => Some(*def_id),
+            _ => {
+                self.resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == name && s.kind == SymbolKind::Struct)
+                    .map(|s| s.def_id)
+            }
+        };
+
+        if let Some(struct_def_id) = struct_def_id {
+            // Unify scrutinee with the struct type.
+            let struct_ty = Ty::Struct {
+                def_id: struct_def_id,
+                type_args: vec![],
+            };
+            if self.unify.unify(scrutinee_ty, &struct_ty).is_err() {
+                self.diagnostics.push(errors::pattern_mismatch(
+                    scrutinee_ty,
+                    self.file_name,
+                    span,
+                    self.source,
+                ));
+                return;
+            }
+
+            // Look up struct fields and bind sub-patterns.
+            if let Some(struct_fields) = self.env.struct_fields.get(&struct_def_id).cloned() {
+                for fp in fields {
+                    if let Some((_, field_ty)) =
+                        struct_fields.iter().find(|(n, _)| n == &fp.name)
+                    {
+                        if let Some(ref sub_pat) = fp.pattern {
+                            self.infer_pattern_bindings(sub_pat, field_ty);
+                        } else {
+                            // Shorthand: `#{name}` binds `name` to the field type.
+                            if let Some(&def_id) =
+                                self.resolved.resolutions.get(&fp.span.start)
+                            {
+                                self.env.defs.insert(
+                                    def_id,
+                                    crate::env::TypeInfo {
+                                        ty: field_ty.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            self.diagnostics.push(errors::pattern_mismatch(
+                scrutinee_ty,
+                self.file_name,
+                span,
+                self.source,
+            ));
+        }
+    }
+
+    /// Check interface bounds for a type parameter's concrete type argument.
+    fn check_interface_bounds(
+        &mut self,
+        param_def_id: DefId,
+        concrete_ty: &Ty,
+        span: Span,
+    ) {
+        let bounds = match self.env.type_param_bounds.get(&param_def_id) {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        for iface_def_id in &bounds {
+            let iface_name = self
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.def_id == *iface_def_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "?".to_string());
+
+            let required_methods = match self.env.interface_methods.get(iface_def_id) {
+                Some(m) => m.clone(),
+                None => continue,
+            };
+
+            // For each required method, check that the concrete type has it.
+            for (method_name, _expected_fn_ty) in &required_methods {
+                let type_name = self.get_concrete_type_name(concrete_ty);
+                if let Some(ref type_name) = type_name {
+                    let key = format!("{type_name}.{method_name}");
+                    let has_method = self.resolved.symbols.iter().any(|s| {
+                        s.name == key
+                            && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+                    });
+                    if !has_method {
+                        self.diagnostics.push(errors::missing_method(
+                            concrete_ty,
+                            method_name,
+                            &iface_name,
+                            self.file_name,
+                            span,
+                            self.source,
+                        ));
+                        return;
+                    }
+                } else {
+                    // Can't determine type name — report unsatisfied bound.
+                    self.diagnostics.push(errors::unsatisfied_bound(
+                        concrete_ty,
+                        &iface_name,
+                        self.file_name,
+                        span,
+                        self.source,
+                    ));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Get the type name for a concrete type (for method lookup).
+    fn get_concrete_type_name(&self, ty: &Ty) -> Option<String> {
+        match ty {
+            Ty::Struct { def_id, .. } | Ty::Enum { def_id, .. } => {
+                self.resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.def_id == *def_id)
+                    .map(|s| s.name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Check parameter modifiers match between call-site and definition.
+    fn check_param_modifiers(&mut self, func: &Expr, args: &[CallArg], span: Span) {
+        // Resolve the function's DefId.
+        let fn_def_id = self.resolve_call_target(func);
+        let Some(fn_def_id) = fn_def_id else { return };
+
+        let expected_modifiers = match self.env.param_modifiers.get(&fn_def_id) {
+            Some(m) => m.clone(),
+            None => return,
+        };
+
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(expected) = expected_modifiers.get(i) {
+                if &arg.modifier != expected {
+                    let expected_str = modifier_to_str(expected);
+                    let found_str = modifier_to_str(&arg.modifier);
+                    self.diagnostics.push(errors::modifier_mismatch(
+                        expected_str,
+                        found_str,
+                        self.file_name,
+                        span,
+                        self.source,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Resolve the DefId of the function being called.
+    fn resolve_call_target(&self, func: &Expr) -> Option<DefId> {
+        match &func.kind {
+            ExprKind::Ident(_) => {
+                self.resolved.resolutions.get(&func.span.start).copied()
+            }
+            ExprKind::Field { expr: inner, name, .. } => {
+                // Method/constructor call: look up "TypeName.methodName".
+                let inner_ty = self.expr_types.get(&inner.span.start);
+                if let Some(inner_ty) = inner_ty {
+                    if let Some(type_name) = self.get_concrete_type_name(inner_ty) {
+                        let key = format!("{type_name}.{name}");
+                        return self.resolved.symbols.iter().find(|s| {
+                            s.name == key
+                                && matches!(
+                                    s.kind,
+                                    SymbolKind::Method | SymbolKind::Constructor
+                                )
+                        }).map(|s| s.def_id);
+                    }
+                }
+                // Also check if inner is a type identifier.
+                if let ExprKind::Ident(type_name) = &inner.kind {
+                    let key = format!("{type_name}.{name}");
+                    return self.resolved.symbols.iter().find(|s| {
+                        s.name == key
+                            && matches!(
+                                s.kind,
+                                SymbolKind::Method | SymbolKind::Constructor
+                            )
+                    }).map(|s| s.def_id);
+                }
+                None
+            }
+            ExprKind::TypeApp { expr: inner, .. } => {
+                // Generic instantiation: the target is the inner expression.
+                self.resolve_call_target(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check that effects on the called function are handled or declared.
+    fn check_call_effects(&mut self, func: &Expr, span: Span) {
+        let fn_def_id = self.resolve_call_target(func);
+        let Some(fn_def_id) = fn_def_id else { return };
+
+        let callee_effects = match self.env.fn_effects.get(&fn_def_id) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+
+        // Get the callee name for error messages.
+        let callee_name = self
+            .resolved
+            .symbols
+            .iter()
+            .find(|s| s.def_id == fn_def_id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| "?".to_string());
+
+        for effect in &callee_effects {
+            let is_declared = self.current_effects.contains(effect);
+            let is_handled = self.handled_effects.contains(effect);
+
+            if !is_declared && !is_handled {
+                // Neither declared on current function nor handled by a handle expression.
+                self.diagnostics.push(errors::unhandled_effect(
+                    &callee_name,
+                    effect,
+                    self.file_name,
+                    span,
+                    self.source,
+                ));
+            }
+        }
+    }
+
+    /// Check receiver modifier for method calls.
+    fn check_receiver_modifier(&mut self, method_def_id: DefId, _inner_expr: &Expr, span: Span) {
+        if let Some(expected) = self.env.receiver_modifiers.get(&method_def_id) {
+            // For now, just check that Move receiver isn't called on a borrowed reference.
+            // More detailed borrow checking would require tracking variable states.
+            if *expected == ReceiverModifier::Move {
+                // Report a warning-like diagnostic for callers to be aware.
+                // In a full implementation, we'd check if the receiver is borrowed.
+            }
+            let _ = expected; // Suppress unused warnings for now.
+        }
+        let _ = span;
     }
 
     /// Expect a specific type, reporting a mismatch if unification fails.
@@ -961,6 +1392,16 @@ impl<'a> InferCtx<'a> {
         for stmt in stmts {
             self.infer_stmt(stmt);
         }
+    }
+}
+
+/// Convert a ParamModifier to a human-readable string.
+fn modifier_to_str(m: &ParamModifier) -> &'static str {
+    match m {
+        ParamModifier::None => "none",
+        ParamModifier::Mut => "mut",
+        ParamModifier::Move => "move",
+        ParamModifier::MoveMut => "move mut",
     }
 }
 

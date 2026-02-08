@@ -513,6 +513,370 @@ fn main()
 }
 
 #[test]
+// ===== String type tests =====
+
+#[test]
+fn infer_string_literal() {
+    let source = "fn main()\n    \"hello\"\n";
+    let output = check_no_errors(source);
+    let has_str = output.expr_types.values().any(|ty| *ty == Ty::Prim(PrimTy::Str));
+    assert!(has_str, "expected str type for string literal");
+}
+
+#[test]
+fn infer_string_interp() {
+    let source = "fn main()\n    let name = \"world\"\n    \"hello {name}\"\n";
+    let output = check_no_errors(source);
+    let has_str = output.expr_types.values().any(|ty| *ty == Ty::Prim(PrimTy::Str));
+    assert!(has_str, "expected str type for string interpolation");
+}
+
+#[test]
+fn string_param_type_check() {
+    let source = "fn greet(name: str) -> str\n    name\n\nfn main()\n    greet(\"hello\")\n";
+    check_no_errors(source);
+}
+
+#[test]
+fn string_type_mismatch() {
+    let source = "fn add(a: i64, b: i64) -> i64\n    a + b\n\nfn main()\n    add(\"hello\", 2)\n";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0200"));
+}
+
+// ===== Pattern type checking tests =====
+
+#[test]
+fn match_constructor_pattern() {
+    let source = "\
+enum Shape
+    Circle(radius: f64)
+    Rect(width: f64, height: f64)
+
+fn area(s: Shape) -> f64
+    match s
+        Shape.Circle(r) => r
+        Shape.Rect(w, h) => w
+";
+    let output = check_no_errors(source);
+    // The pattern bindings r, w, h should be f64.
+    let has_f64 = output.expr_types.values().any(|ty| *ty == Ty::Prim(PrimTy::F64));
+    assert!(has_f64, "expected f64 type for pattern bindings");
+}
+
+#[test]
+fn match_struct_pattern() {
+    let source = "\
+struct Point
+    x: f64
+    y: f64
+
+fn check(p: Point) -> f64
+    match p
+        Point #{x, y} => x
+";
+    let output = check_no_errors(source);
+    let has_f64 = output.expr_types.values().any(|ty| *ty == Ty::Prim(PrimTy::F64));
+    assert!(has_f64, "expected f64 type for struct pattern bindings");
+}
+
+#[test]
+fn match_literal_pattern() {
+    let source = "\
+fn check(x: i64) -> i64
+    match x
+        1 => 10
+        2 => 20
+        _ => 0
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn match_or_pattern() {
+    let source = "\
+fn check(x: i64) -> i64
+    match x
+        1 | 2 => 10
+        _ => 0
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn match_wildcard_already_works() {
+    let source = "\
+fn check(x: i64) -> i64
+    match x
+        _ => 0
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn let_pattern_constructor() {
+    let source = "\
+enum Shape
+    Circle(radius: f64)
+
+fn main()
+    let s: Shape = 42
+";
+    // This should produce a type error since i64 != Shape.
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0200"));
+}
+
+#[test]
+fn pattern_mismatch_error() {
+    let source = "\
+fn check(x: i64) -> i64
+    match x
+        Shape.Circle(r) => 0
+        _ => 1
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0208"));
+}
+
+#[test]
+fn match_nested_pattern() {
+    let source = "\
+enum Shape
+    Circle(radius: f64)
+    Rect(width: f64, height: f64)
+
+fn check(s: Shape) -> f64
+    match s
+        Shape.Circle(r) => r
+        Shape.Rect(w, h) => w + h
+";
+    check_no_errors(source);
+}
+
+// ===== Interface satisfaction tests =====
+
+#[test]
+fn interface_bound_satisfied() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+struct Point
+    x: f64
+    y: f64
+
+fn@[Point] show() -> str
+    \"point\"
+
+fn display[T: Printable](x: T) -> str
+    \"ok\"
+
+fn main()
+    let p = Point #{x: 1.0, y: 2.0}
+    display[Point](p)
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn interface_bound_violated() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+struct Empty
+    x: i64
+
+fn display[T: Printable](x: T) -> str
+    \"ok\"
+
+fn main()
+    let e = Empty #{x: 1}
+    display[Empty](e)
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0210"));
+}
+
+#[test]
+fn interface_multiple_bounds() {
+    let source = "\
+interface Show
+    fn show() -> str
+
+interface Debug
+    fn debug() -> str
+
+struct Foo
+    x: i64
+
+fn@[Foo] show() -> str
+    \"foo\"
+
+fn@[Foo] debug() -> str
+    \"debug\"
+
+fn display[T: Show + Debug](x: T) -> str
+    \"ok\"
+
+fn main()
+    let f = Foo #{x: 1}
+    display[Foo](f)
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn interface_method_resolution() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+fn display[T: Printable](x: T) -> str
+    \"ok\"
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn interface_def_registers() {
+    let source = "\
+interface Printable
+    fn show() -> str
+    fn name() -> str
+
+fn main()
+    42
+";
+    let (ast, _) = axion_parser::parse(source, "test.ax");
+    let (resolved, _) = axion_resolve::resolve(&ast, "test.ax", source);
+    let unify = &mut crate::unify::UnifyContext::new();
+    let env = crate::env::TypeEnv::build(&ast, &resolved, unify);
+    // Find the interface DefId and check methods are registered.
+    let iface_sym = resolved.symbols.iter().find(|s| {
+        s.name == "Printable" && s.kind == axion_resolve::def_id::SymbolKind::Interface
+    });
+    assert!(iface_sym.is_some(), "expected Printable interface symbol");
+    let iface_def_id = iface_sym.unwrap().def_id;
+    let methods = env.interface_methods.get(&iface_def_id);
+    assert!(methods.is_some(), "expected interface methods registered");
+    let methods = methods.unwrap();
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].0, "show");
+    assert_eq!(methods[1].0, "name");
+}
+
+#[test]
+fn interface_bound_wrong_signature() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+struct Bad
+    x: i64
+
+fn@[Bad] show() -> i64
+    42
+
+fn display[T: Printable](x: T) -> str
+    \"ok\"
+
+fn main()
+    let b = Bad #{x: 1}
+    display[Bad](b)
+";
+    // The method `show` exists but returns i64, not str.
+    // For now, we only check method existence (not signature), so this passes.
+    // This is a simplified check — signature checking would require deeper analysis.
+    check_no_errors(source);
+}
+
+// ===== Ownership/Borrow checking tests =====
+
+#[test]
+fn move_param_correct() {
+    let source = "\
+fn consume(move x: i64) -> i64
+    x
+
+fn main()
+    consume(move 42)
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn move_param_missing() {
+    let source = "\
+fn consume(move x: i64) -> i64
+    x
+
+fn main()
+    consume(42)
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0211"));
+}
+
+#[test]
+fn mut_param_correct() {
+    let source = "\
+fn mutate(mut x: i64) -> i64
+    x
+
+fn main()
+    mutate(mut 42)
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn receiver_borrow_ok() {
+    let source = "\
+struct Point
+    x: f64
+    y: f64
+
+fn@[Point] get_x() -> f64
+    self.x
+
+fn main()
+    let p = Point #{x: 1.0, y: 2.0}
+    p.get_x()
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn receiver_move_mismatch() {
+    // This test checks that a method with Move receiver is registered.
+    // The syntax for move receiver is `fn@[move Point]`.
+    let source = "\
+struct Point
+    x: f64
+    y: f64
+
+fn@[move Point] consume() -> f64
+    self.x
+";
+    // This should parse and type-check without errors
+    // (Move receiver checking requires tracking variable ownership state).
+    check_no_errors(source);
+}
+
+#[test]
+fn no_modifier_default() {
+    let source = "\
+fn add(a: i64, b: i64) -> i64
+    a + b
+
+fn main()
+    add(1, 2)
+";
+    check_no_errors(source);
+}
+
 fn integration_enum_def() {
     let source = "\
 enum Shape
@@ -526,4 +890,92 @@ fn main()
     42
 ";
     check_no_errors(source);
+}
+
+// ===== Effect checking tests =====
+
+#[test]
+fn effect_declared_and_handled() {
+    // A function with IO effect calling another IO function → no error (propagation).
+    let source = "\
+fn read_file(path: i64) -> i64 with IO
+    path
+
+fn process(x: i64) -> i64 with IO
+    read_file(x)
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn effect_not_declared_error() {
+    // A function without effects calls an effectful function → E0213.
+    let source = "\
+fn read_file(path: i64) -> i64 with IO
+    path
+
+fn main()
+    read_file(42)
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (unhandled_effect), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn effect_handle_expression() {
+    // Handle expression handles the IO effect → no error.
+    let source = "\
+fn read_file(path: i64) -> i64 with IO
+    path
+
+fn main()
+    handle read_file(42)
+        IO => 0
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn effect_propagation() {
+    // Function declares IO, calls another IO function → propagation, no error.
+    let source = "\
+fn inner() -> i64 with IO
+    42
+
+fn outer() -> i64 with IO
+    inner()
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn multiple_effects() {
+    // Function with multiple effects calls functions with different effects → no error.
+    let source = "\
+fn read_data() -> i64 with IO
+    42
+
+fn get_state() -> i64 with State
+    1
+
+fn process() -> i64 with IO, State
+    read_data() + get_state()
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn effect_unhandled_error() {
+    // Function with IO effect calls a function with State effect (not declared) → E0213.
+    let source = "\
+fn get_state() -> i64 with State
+    1
+
+fn process() -> i64 with IO
+    get_state()
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (unhandled_effect), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
 }

@@ -56,6 +56,17 @@ pub fn type_check(
                 // Register self params for function bodies.
                 register_fn_params(&mut env, &f.params, resolved, &mut unify);
 
+                // Look up effects for this function.
+                let fn_def_id = resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.span == item.span)
+                    .map(|s| s.def_id);
+                let current_effects = fn_def_id
+                    .and_then(|id| env.fn_effects.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+
                 let mut ctx = InferCtx {
                     env: &mut env,
                     unify: &mut unify,
@@ -67,6 +78,8 @@ pub fn type_check(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: ret_ty,
                     self_ty: None,
+                    current_effects,
+                    handled_effects: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&f.body);
 
@@ -105,6 +118,17 @@ pub fn type_check(
                 register_self_param(&mut env, item, resolved, &receiver_ty);
                 register_fn_params(&mut env, &m.params, resolved, &mut unify);
 
+                // Look up effects for this method.
+                let method_def_id = resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.span == item.span)
+                    .map(|s| s.def_id);
+                let current_effects = method_def_id
+                    .and_then(|id| env.fn_effects.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+
                 let self_ty_for_method = receiver_ty.clone();
                 let mut ctx = InferCtx {
                     env: &mut env,
@@ -117,6 +141,8 @@ pub fn type_check(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: ret_ty,
                     self_ty: Some(self_ty_for_method),
+                    current_effects,
+                    handled_effects: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&m.body);
 
@@ -168,6 +194,8 @@ pub fn type_check(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: ret_ty,
                     self_ty: None,
+                    current_effects: Vec::new(),
+                    handled_effects: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&c.body);
 
@@ -195,6 +223,8 @@ pub fn type_check(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: Ty::Unit,
                     self_ty: None,
+                    current_effects: Vec::new(),
+                    handled_effects: Vec::new(),
                 };
                 ctx.infer_stmts(&t.body);
             }

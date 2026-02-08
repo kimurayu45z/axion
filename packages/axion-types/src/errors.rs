@@ -90,3 +90,80 @@ pub fn extra_field(name: &str, file: &str, span: Span, source: &str) -> Diagnost
         source,
     )
 }
+
+pub fn pattern_mismatch(ty: &Ty, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0208",
+        "pattern_mismatch",
+        &format!("pattern does not match type '{ty}'"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn unsatisfied_bound(ty: &Ty, iface: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0209",
+        "unsatisfied_bound",
+        &format!("type '{ty}' does not satisfy interface '{iface}'"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn missing_method(ty: &Ty, method: &str, iface: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0210",
+        "missing_method",
+        &format!("type '{ty}' is missing method '{method}' required by interface '{iface}'"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn modifier_mismatch(expected: &str, found: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0211",
+        "modifier_mismatch",
+        &format!("expected '{expected}' modifier, found '{found}'"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn receiver_modifier_mismatch(expected: &str, found: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0212",
+        "receiver_modifier_mismatch",
+        &format!("method requires '{expected}' receiver, but got '{found}'"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn unhandled_effect(callee: &str, effect: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0213",
+        "unhandled_effect",
+        &format!("function '{callee}' has effect '{effect}' which is not handled in this context"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn effect_not_declared(effect: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        "E0214",
+        "effect_not_declared",
+        &format!("function has undeclared effect '{effect}'"),
+        file,
+        span,
+        source,
+    )
+}

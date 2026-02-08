@@ -22,6 +22,16 @@ pub struct TypeEnv {
     pub struct_fields: HashMap<DefId, Vec<(String, Ty)>>,
     /// Enum DefId → list of (variant_name, variant_DefId, fields: Vec<(field_name, Ty)>).
     pub enum_variants: HashMap<DefId, Vec<(String, DefId, Vec<(String, Ty)>)>>,
+    /// Interface DefId → list of (method_name, Fn type).
+    pub interface_methods: HashMap<DefId, Vec<(String, Ty)>>,
+    /// TypeParam DefId → list of interface DefId bounds.
+    pub type_param_bounds: HashMap<DefId, Vec<DefId>>,
+    /// Function/Method DefId → list of ParamModifiers for each param.
+    pub param_modifiers: HashMap<DefId, Vec<ParamModifier>>,
+    /// Method DefId → ReceiverModifier.
+    pub receiver_modifiers: HashMap<DefId, ReceiverModifier>,
+    /// Function/Method DefId → list of effect names.
+    pub fn_effects: HashMap<DefId, Vec<String>>,
 }
 
 impl TypeEnv {
@@ -35,6 +45,11 @@ impl TypeEnv {
             defs: HashMap::new(),
             struct_fields: HashMap::new(),
             enum_variants: HashMap::new(),
+            interface_methods: HashMap::new(),
+            type_param_bounds: HashMap::new(),
+            param_modifiers: HashMap::new(),
+            receiver_modifiers: HashMap::new(),
+            fn_effects: HashMap::new(),
         };
 
         let symbols = &resolved.symbols;
@@ -88,8 +103,11 @@ impl TypeEnv {
             ItemKind::Extern(ext) => {
                 self.register_extern_block(ext, symbols, resolutions, unify);
             }
-            ItemKind::Interface(_) | ItemKind::Use(_) | ItemKind::Test(_) => {
-                // Interfaces, use decls, and tests don't need type env entries for now.
+            ItemKind::Interface(iface) => {
+                self.register_interface_def(iface, item, symbols, resolutions);
+            }
+            ItemKind::Use(_) | ItemKind::Test(_) => {
+                // Use decls and tests don't need type env entries.
             }
         }
     }
@@ -127,6 +145,16 @@ impl TypeEnv {
             ret: Box::new(ret_ty),
         };
         self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameter modifiers.
+        let modifiers: Vec<ParamModifier> = f.params.iter().map(|p| p.modifier.clone()).collect();
+        self.param_modifiers.insert(def_id, modifiers);
+
+        // Register effects.
+        if !f.effects.is_empty() {
+            let effects: Vec<String> = f.effects.iter().map(|e| e.name.clone()).collect();
+            self.fn_effects.insert(def_id, effects);
+        }
 
         // Register parameters as local defs.
         self.register_params(&f.params, symbols, resolutions, unify);
@@ -166,6 +194,19 @@ impl TypeEnv {
             ret: Box::new(ret_ty),
         };
         self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameter modifiers.
+        let modifiers: Vec<ParamModifier> = m.params.iter().map(|p| p.modifier.clone()).collect();
+        self.param_modifiers.insert(def_id, modifiers);
+
+        // Register receiver modifier.
+        self.receiver_modifiers.insert(def_id, m.receiver_modifier.clone());
+
+        // Register effects.
+        if !m.effects.is_empty() {
+            let effects: Vec<String> = m.effects.iter().map(|e| e.name.clone()).collect();
+            self.fn_effects.insert(def_id, effects);
+        }
 
         // Register parameters.
         self.register_params(&m.params, symbols, resolutions, unify);
@@ -215,6 +256,10 @@ impl TypeEnv {
             ret: Box::new(ret_ty),
         };
         self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameter modifiers.
+        let modifiers: Vec<ParamModifier> = c.params.iter().map(|p| p.modifier.clone()).collect();
+        self.param_modifiers.insert(def_id, modifiers);
 
         // Register parameters.
         self.register_params(&c.params, symbols, resolutions, unify);
@@ -355,8 +400,37 @@ impl TypeEnv {
     ) {
         for tp in type_params {
             match tp {
-                TypeParam::Type { span, .. } => {
-                    if let Some(&def_id) = resolutions.get(&span.start) {
+                TypeParam::Type { span, bounds, .. } => {
+                    // The resolver doesn't record a resolution for type params;
+                    // find the symbol by span match instead.
+                    let tp_sym = symbols.iter().find(|s| {
+                        s.kind == SymbolKind::TypeParam && s.name != "Self" && s.span == *span
+                    });
+                    if let Some(tp_sym) = tp_sym {
+                        let def_id = tp_sym.def_id;
+                        self.defs.insert(def_id, TypeInfo { ty: Ty::Param(def_id) });
+                        // Register bounds for this type parameter.
+                        if !bounds.is_empty() {
+                            let mut bound_def_ids = Vec::new();
+                            for bound in bounds {
+                                if let Some(&iface_def_id) = resolutions.get(&bound.span.start) {
+                                    bound_def_ids.push(iface_def_id);
+                                } else {
+                                    // Fall back to finding the interface by name.
+                                    let iface_sym = symbols.iter().find(|s| {
+                                        s.name == bound.name && s.kind == SymbolKind::Interface
+                                    });
+                                    if let Some(sym) = iface_sym {
+                                        bound_def_ids.push(sym.def_id);
+                                    }
+                                }
+                            }
+                            if !bound_def_ids.is_empty() {
+                                self.type_param_bounds.insert(def_id, bound_def_ids);
+                            }
+                        }
+                    } else if let Some(&def_id) = resolutions.get(&span.start) {
+                        // Fallback: try resolution map
                         self.defs.insert(def_id, TypeInfo { ty: Ty::Param(def_id) });
                     }
                 }
@@ -373,6 +447,46 @@ impl TypeEnv {
                 }
             }
         }
+    }
+
+    fn register_interface_def(
+        &mut self,
+        iface: &InterfaceDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+    ) {
+        // Find the interface symbol by name and kind, since the item span may not match
+        // the symbol span exactly for interface definitions.
+        let def_id = self.find_def_id_for_item(item, symbols).or_else(|| {
+            symbols.iter().find(|s| {
+                s.name == iface.name && s.kind == SymbolKind::Interface
+            }).map(|s| s.def_id)
+        });
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&iface.type_params, symbols, resolutions);
+
+        // Lower each InterfaceMethod to a (name, Fn type) entry.
+        let mut methods = Vec::new();
+        for method in &iface.methods {
+            let param_tys: Vec<Ty> = method
+                .params
+                .iter()
+                .map(|p| lower_type_expr(&p.ty, symbols, resolutions))
+                .collect();
+            let ret_ty = match &method.return_type {
+                Some(te) => lower_type_expr(te, symbols, resolutions),
+                None => Ty::Unit,
+            };
+            let fn_ty = Ty::Fn {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+            };
+            methods.push((method.name.clone(), fn_ty));
+        }
+        self.interface_methods.insert(def_id, methods);
     }
 
     fn register_params(
