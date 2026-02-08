@@ -8,6 +8,19 @@ use crate::expr::compile_expr;
 use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata};
 use crate::stmt::compile_stmt;
 
+/// Emit cleanup code: free all heap-allocated pointers in reverse order.
+pub fn emit_cleanup<'ctx>(ctx: &CodegenCtx<'ctx>) {
+    let free_fn = match ctx.module.get_function("free") {
+        Some(f) => f,
+        None => return,
+    };
+    for ptr in ctx.heap_allocs.iter().rev() {
+        ctx.builder
+            .build_call(free_fn, &[(*ptr).into()], "")
+            .unwrap();
+    }
+}
+
 /// Phase 1: Declare all functions (create LLVM function declarations).
 pub fn declare_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceFile) {
     for item in &source_file.items {
@@ -82,9 +95,10 @@ fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span)
     let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
     ctx.builder.position_at_end(entry_bb);
 
-    // Clear locals for this function.
+    // Clear locals and heap allocations for this function.
     ctx.locals.clear();
     ctx.local_types.clear();
+    ctx.heap_allocs.clear();
 
     // Alloca params as local variables.
     for (i, param) in f.params.iter().enumerate() {
@@ -144,6 +158,7 @@ fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span)
         .get_terminator()
         .is_none()
     {
+        emit_cleanup(ctx);
         if is_void_ty(&ret_ty) {
             ctx.builder.build_return(None).unwrap();
         } else if let Some(val) = last_val {
@@ -223,9 +238,10 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
         ctx.builder.position_at_end(entry_bb);
 
-        // Clear locals for this function.
+        // Clear locals and heap allocations for this function.
         ctx.locals.clear();
         ctx.local_types.clear();
+        ctx.heap_allocs.clear();
 
         // Alloca params as local variables.
         for (i, param) in params.iter().enumerate() {
@@ -283,6 +299,7 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             .get_terminator()
             .is_none()
         {
+            emit_cleanup(ctx);
             if is_void_ty(&ret_ty) {
                 ctx.builder.build_return(None).unwrap();
             } else if let Some(val) = last_val {

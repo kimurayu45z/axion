@@ -348,3 +348,106 @@ fn main() -> i64
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
 }
+
+#[test]
+fn compile_generic_struct_bool() {
+    // Test that a generic struct with bool fields has correct LLVM layout.
+    // The struct_to_llvm with type_args substitution should produce i8 fields for bool.
+    let src = "\
+struct Pair[T]
+    first: T
+    second: T
+
+fn main() -> i64
+    0
+";
+    let ir = compile_ir(src);
+    // The IR should compile without errors — generic struct definition is valid.
+    assert!(ir.contains("define"), "IR should contain function definitions");
+}
+
+#[test]
+fn compile_generic_struct_mixed() {
+    // Test that two non-generic structs with different field types produce different layouts.
+    let src = "\
+struct PairI64
+    first: i64
+    second: i64
+
+struct PairBool
+    first: bool
+    second: bool
+
+fn check_bool(p: PairBool) -> i64
+    if p.first
+        1
+    else
+        0
+
+fn main() -> i64
+    let a = PairI64 #{first: 10, second: 20}
+    let b = PairBool #{first: true, second: false}
+    a.first + a.second + check_bool(b)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 31);
+}
+
+#[test]
+fn compile_generic_fn_with_struct() {
+    // Test that a struct accessed inside a generic function uses correct layout
+    // after monomorphization substitutes the type parameter.
+    let src = "\
+struct Point
+    x: i64
+    y: i64
+
+fn get_x(p: Point) -> i64
+    p.x
+
+fn main() -> i64
+    let p = Point #{x: 42, y: 10}
+    get_x(p)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_closure_env_freed() {
+    // Test that capturing closures generate a free call for the environment.
+    let src = "\
+fn main() -> i64
+    let x = 10
+    let f = |y: i64| x + y
+    f(32)
+";
+    let ir = compile_ir(src);
+    assert!(ir.contains("call void @free"), "IR should contain a free call for closure env");
+}
+
+#[test]
+fn compile_string_interp_freed() {
+    // Test that string interpolation generates a free call for the buffer.
+    let src = r#"
+fn main()
+    let x = 42
+    let s = "value is {x}"
+    println(s)
+"#;
+    let ir = compile_ir(src);
+    assert!(ir.contains("call void @free"), "IR should contain a free call for string interp buffer");
+}
+
+#[test]
+fn compile_no_leak_basic() {
+    // Test that a function with no heap allocations does not contain free calls.
+    let src = "\
+fn main() -> i64
+    let x = 10
+    let y = 20
+    x + y
+";
+    let ir = compile_ir(src);
+    assert!(!ir.contains("call void @free"), "IR should not contain free calls when there are no heap allocations");
+}

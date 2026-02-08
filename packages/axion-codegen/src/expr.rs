@@ -9,7 +9,7 @@ use inkwell::AddressSpace;
 
 use crate::context::CodegenCtx;
 use crate::intrinsics::build_printf_call;
-use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata, variant_struct_type, enum_max_payload_bytes};
+use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata, variant_struct_type, enum_max_payload_bytes, build_subst_map};
 use crate::stmt::compile_stmt;
 
 /// Compile an expression and return its LLVM value (None for void expressions).
@@ -953,6 +953,9 @@ fn compile_closure<'ctx>(
             .try_as_basic_value()
             .left()?
             .into_pointer_value();
+
+        // Track this heap allocation for cleanup.
+        ctx.heap_allocs.push(raw_ptr);
 
         // Store each captured value into the environment.
         for (i, (cap_def_id, cap_ty)) in captures.iter().enumerate() {
@@ -1924,7 +1927,12 @@ fn compile_match_constructor<'ctx>(
     ctx.builder.position_at_end(arm_bb);
 
     if !variant_fields.is_empty() && !fields.is_empty() {
-        let variant_struct_ty = variant_struct_type(ctx, &variant_fields);
+        let type_args = match scrutinee_ty {
+            Ty::Enum { type_args, .. } => type_args.clone(),
+            _ => vec![],
+        };
+        let subst = build_subst_map(ctx, enum_def_id, &type_args);
+        let variant_struct_ty = variant_struct_type(ctx, &variant_fields, &subst);
 
         // Get pointer to the payload area (index 1 in enum struct).
         let payload_ptr = ctx
@@ -1938,7 +1946,8 @@ fn compile_match_constructor<'ctx>(
                 break;
             }
             let (_, ref field_ty) = variant_fields[fi];
-            let field_llvm_ty = ty_to_llvm(ctx, field_ty);
+            let resolved_field_ty = if subst.is_empty() { field_ty.clone() } else { axion_mono::specialize::substitute(field_ty, &subst) };
+            let field_llvm_ty = ty_to_llvm(ctx, &resolved_field_ty);
 
             let field_ptr = ctx
                 .builder
@@ -1984,9 +1993,14 @@ fn compile_enum_unit_variant<'ctx>(
     field_expr: &Expr,
 ) -> Option<BasicValueEnum<'ctx>> {
     let variant_idx = ctx.type_check.field_resolutions.get(&field_expr.span.start)?;
-    let enum_ty = ty_to_llvm(ctx, &Ty::Enum { def_id: enum_def_id, type_args: vec![] });
+    let expr_ty = get_expr_ty(ctx, field_expr);
+    let type_args = match &expr_ty {
+        Ty::Enum { type_args, .. } => type_args.clone(),
+        _ => vec![],
+    };
+    let enum_ty = ty_to_llvm(ctx, &Ty::Enum { def_id: enum_def_id, type_args: type_args.clone() });
 
-    let max_bytes = enum_max_payload_bytes(ctx, enum_def_id);
+    let max_bytes = enum_max_payload_bytes(ctx, enum_def_id, &type_args);
     if max_bytes == 0 {
         // Tag-only enum: { i8 }
         let mut val = enum_ty.into_struct_type().const_zero();
@@ -2029,12 +2043,25 @@ fn compile_enum_data_variant<'ctx>(
     args: &[CallArg],
 ) -> Option<BasicValueEnum<'ctx>> {
     let variant_idx = ctx.type_check.field_resolutions.get(&func_expr.span.start)?;
-    let enum_ty = ty_to_llvm(ctx, &Ty::Enum { def_id: enum_def_id, type_args: vec![] });
+    // Get the enum's type_args from the result type of this call expression.
+    // The func_expr (e.g. Shape.Circle) resolves to a Fn type, but its parent
+    // call expression has the Enum type. We look up the parent call's type_args.
+    let call_ty = get_expr_ty(ctx, func_expr);
+    let type_args = match &call_ty {
+        Ty::Enum { type_args, .. } => type_args.clone(),
+        Ty::Fn { ret, .. } => match ret.as_ref() {
+            Ty::Enum { type_args, .. } => type_args.clone(),
+            _ => vec![],
+        },
+        _ => vec![],
+    };
+    let enum_ty = ty_to_llvm(ctx, &Ty::Enum { def_id: enum_def_id, type_args: type_args.clone() });
 
     // Get the variant's field types.
     let variants = ctx.type_env.enum_variants.get(&enum_def_id)?;
     let (_, _, variant_fields) = variants.get(*variant_idx)?;
-    let variant_struct_ty = variant_struct_type(ctx, variant_fields);
+    let subst = build_subst_map(ctx, enum_def_id, &type_args);
+    let variant_struct_ty = variant_struct_type(ctx, variant_fields, &subst);
 
     // Alloca the enum on the stack.
     let alloca = ctx.builder.build_alloca(enum_ty, "enum_val").unwrap();
@@ -2256,6 +2283,9 @@ fn compile_string_interp<'ctx>(
         .try_as_basic_value()
         .left()?
         .into_pointer_value();
+
+    // Track this heap allocation for cleanup.
+    ctx.heap_allocs.push(buf_ptr);
 
     // Second pass: snprintf(buf, buf_size, fmt, ...) to write the string.
     let mut write_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =

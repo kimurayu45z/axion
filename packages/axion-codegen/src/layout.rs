@@ -1,4 +1,7 @@
-use axion_resolve::def_id::DefId;
+use std::collections::HashMap;
+
+use axion_mono::specialize::substitute;
+use axion_resolve::def_id::{DefId, SymbolKind};
 use axion_types::ty::{PrimTy, Ty};
 use inkwell::context::Context;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
@@ -6,13 +9,46 @@ use inkwell::AddressSpace;
 
 use crate::context::CodegenCtx;
 
+/// Get the type parameter DefIds for a struct or enum definition.
+fn get_type_param_def_ids(ctx: &CodegenCtx, def_id: DefId) -> Vec<DefId> {
+    let parent_sym = ctx
+        .resolved
+        .symbols
+        .iter()
+        .find(|s| s.def_id == def_id);
+    let Some(parent_sym) = parent_sym else {
+        return vec![];
+    };
+    ctx.resolved
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.kind == SymbolKind::TypeParam
+                && s.name != "Self"
+                && s.span.start >= parent_sym.span.start
+                && s.span.end <= parent_sym.span.end
+        })
+        .map(|s| s.def_id)
+        .collect()
+}
+
+/// Build a substitution map from a struct/enum's type parameters to concrete type arguments.
+pub fn build_subst_map(ctx: &CodegenCtx, def_id: DefId, type_args: &[Ty]) -> HashMap<DefId, Ty> {
+    let param_ids = get_type_param_def_ids(ctx, def_id);
+    let mut subst = HashMap::new();
+    for (param_def_id, arg_ty) in param_ids.iter().zip(type_args.iter()) {
+        subst.insert(*param_def_id, arg_ty.clone());
+    }
+    subst
+}
+
 /// Convert an Axion Ty to an LLVM BasicTypeEnum.
 pub fn ty_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> BasicTypeEnum<'ctx> {
     match ty {
         Ty::Prim(prim) => prim_to_llvm(ctx.context, *prim),
         Ty::Unit => ctx.context.i8_type().into(),
-        Ty::Struct { def_id, .. } => struct_to_llvm(ctx, *def_id),
-        Ty::Enum { def_id, .. } => enum_to_llvm(ctx, *def_id),
+        Ty::Struct { def_id, type_args } => struct_to_llvm(ctx, *def_id, type_args),
+        Ty::Enum { def_id, type_args } => enum_to_llvm(ctx, *def_id, type_args),
         Ty::Tuple(elems) => {
             let field_types: Vec<BasicTypeEnum<'ctx>> =
                 elems.iter().map(|t| ty_to_llvm(ctx, t)).collect();
@@ -64,11 +100,17 @@ pub fn prim_to_llvm<'ctx>(context: &'ctx Context, prim: PrimTy) -> BasicTypeEnum
     }
 }
 
-/// Convert a struct type to LLVM struct type.
-fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId) -> BasicTypeEnum<'ctx> {
+/// Convert a struct type to LLVM struct type, substituting type parameters with concrete types.
+fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty]) -> BasicTypeEnum<'ctx> {
     if let Some(fields) = ctx.type_env.struct_fields.get(&def_id) {
-        let field_types: Vec<BasicTypeEnum<'ctx>> =
-            fields.iter().map(|(_, ty)| ty_to_llvm(ctx, ty)).collect();
+        let subst = build_subst_map(ctx, def_id, type_args);
+        let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+            .iter()
+            .map(|(_, ty)| {
+                let resolved_ty = if subst.is_empty() { ty.clone() } else { substitute(ty, &subst) };
+                ty_to_llvm(ctx, &resolved_ty)
+            })
+            .collect();
         ctx.context.struct_type(&field_types, false).into()
     } else {
         // Fallback: empty struct
@@ -91,8 +133,8 @@ pub fn is_void_ty(ty: &Ty) -> bool {
 
 /// Convert an enum type to LLVM struct type: { i8 tag, [N x i8] payload }.
 /// N is the maximum payload size across all variants.
-fn enum_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId) -> BasicTypeEnum<'ctx> {
-    let max_bytes = enum_max_payload_bytes(ctx, def_id);
+fn enum_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty]) -> BasicTypeEnum<'ctx> {
+    let max_bytes = enum_max_payload_bytes(ctx, def_id, type_args);
     if max_bytes == 0 {
         // All variants are unit variants — just a tag byte.
         ctx.context
@@ -112,25 +154,31 @@ fn enum_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId) -> BasicTypeEnum<'c
 }
 
 /// Compute the maximum payload size (in bytes) across all variants of an enum.
-pub fn enum_max_payload_bytes<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId) -> u32 {
+pub fn enum_max_payload_bytes<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty]) -> u32 {
     let variants = match ctx.type_env.enum_variants.get(&def_id) {
         Some(v) => v,
         None => return 0,
     };
+    let subst = build_subst_map(ctx, def_id, type_args);
     variants
         .iter()
-        .map(|(_, _, fields)| variant_payload_bytes(ctx, fields))
+        .map(|(_, _, fields)| variant_payload_bytes(ctx, fields, &subst))
         .max()
         .unwrap_or(0)
 }
 
 /// Compute the payload size (in bytes) for a single variant's fields.
-fn variant_payload_bytes<'ctx>(ctx: &CodegenCtx<'ctx>, fields: &[(String, Ty)]) -> u32 {
+fn variant_payload_bytes<'ctx>(ctx: &CodegenCtx<'ctx>, fields: &[(String, Ty)], subst: &HashMap<DefId, Ty>) -> u32 {
     if fields.is_empty() {
         return 0;
     }
-    let field_types: Vec<BasicTypeEnum<'ctx>> =
-        fields.iter().map(|(_, ty)| ty_to_llvm(ctx, ty)).collect();
+    let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+        .iter()
+        .map(|(_, ty)| {
+            let resolved_ty = if subst.is_empty() { ty.clone() } else { substitute(ty, subst) };
+            ty_to_llvm(ctx, &resolved_ty)
+        })
+        .collect();
     field_types.iter().map(|t| estimate_type_bytes(*t)).sum()
 }
 
@@ -152,12 +200,18 @@ fn estimate_type_bytes(ty: BasicTypeEnum) -> u32 {
     }
 }
 
-/// Get the LLVM struct type representing a variant's fields.
+/// Get the LLVM struct type representing a variant's fields, with type substitution.
 pub fn variant_struct_type<'ctx>(
     ctx: &CodegenCtx<'ctx>,
     fields: &[(String, Ty)],
+    subst: &HashMap<DefId, Ty>,
 ) -> inkwell::types::StructType<'ctx> {
-    let field_types: Vec<BasicTypeEnum<'ctx>> =
-        fields.iter().map(|(_, ty)| ty_to_llvm(ctx, ty)).collect();
+    let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+        .iter()
+        .map(|(_, ty)| {
+            let resolved_ty = if subst.is_empty() { ty.clone() } else { substitute(ty, subst) };
+            ty_to_llvm(ctx, &resolved_ty)
+        })
+        .collect();
     ctx.context.struct_type(&field_types, false)
 }

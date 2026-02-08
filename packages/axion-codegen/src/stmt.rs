@@ -3,6 +3,7 @@ use axion_syntax::*;
 
 use crate::context::CodegenCtx;
 use crate::expr::compile_expr;
+use crate::function::emit_cleanup;
 
 /// Compile a statement.
 pub fn compile_stmt<'ctx>(ctx: &mut CodegenCtx<'ctx>, stmt: &Stmt) {
@@ -81,12 +82,14 @@ fn compile_assign<'ctx>(ctx: &mut CodegenCtx<'ctx>, target: &Expr, value: &Expr)
 fn compile_return<'ctx>(ctx: &mut CodegenCtx<'ctx>, opt_expr: Option<&Expr>) {
     if let Some(expr) = opt_expr {
         let val = compile_expr(ctx, expr);
+        emit_cleanup(ctx);
         if let Some(val) = val {
             ctx.builder.build_return(Some(&val)).unwrap();
         } else {
             ctx.builder.build_return(None).unwrap();
         }
     } else {
+        emit_cleanup(ctx);
         ctx.builder.build_return(None).unwrap();
     }
 }

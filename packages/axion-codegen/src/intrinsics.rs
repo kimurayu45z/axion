@@ -43,6 +43,13 @@ pub fn declare_intrinsics<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         .ptr_type(AddressSpace::default())
         .fn_type(&[ctx.context.i64_type().into()], false);
     ctx.module.add_function("malloc", malloc_ty, None);
+
+    // void free(void *ptr)
+    let free_ty = ctx
+        .context
+        .void_type()
+        .fn_type(&[ctx.context.ptr_type(AddressSpace::default()).into()], false);
+    ctx.module.add_function("free", free_ty, None);
 }
 
 /// Get the printf function.

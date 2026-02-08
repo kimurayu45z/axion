@@ -39,6 +39,8 @@ pub struct CodegenCtx<'ctx> {
     pub mono_fn_values: HashMap<String, FunctionValue<'ctx>>,
     /// Current type substitution (active when compiling a specialized function body).
     pub current_subst: HashMap<DefId, Ty>,
+    /// Heap-allocated pointers in the current function (for cleanup before return).
+    pub heap_allocs: Vec<PointerValue<'ctx>>,
 }
 
 impl<'ctx> CodegenCtx<'ctx> {
@@ -70,6 +72,7 @@ impl<'ctx> CodegenCtx<'ctx> {
             mono_output,
             mono_fn_values: HashMap::new(),
             current_subst: HashMap::new(),
+            heap_allocs: Vec::new(),
         }
     }
 }
