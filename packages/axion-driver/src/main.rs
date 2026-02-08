@@ -71,8 +71,12 @@ fn cmd_check(args: &[String]) {
     let (ast, mut diagnostics) = parse(&source, file_path);
 
     // Name resolution pass.
-    let (_resolved, resolve_diags) = axion_resolve::resolve(&ast, file_path, &source);
+    let (resolved, resolve_diags) = axion_resolve::resolve(&ast, file_path, &source);
     diagnostics.extend(resolve_diags);
+
+    // Type checking pass.
+    let (_types, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
+    diagnostics.extend(type_diags);
 
     if json_output {
         let output = DiagnosticOutput::new(diagnostics);

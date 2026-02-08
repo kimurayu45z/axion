@@ -1,13 +1,12 @@
 [package]
-name = "axion-driver"
+name = "axion-types"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 axion-syntax = { path = "../axion-syntax" }
 axion-diagnostics = { path = "../axion-diagnostics" }
-axion-lexer = { path = "../axion-lexer" }
-axion-parser = { path = "../axion-parser" }
 axion-resolve = { path = "../axion-resolve" }
-axion-types = { path = "../axion-types" }
-serde_json = { workspace = true }
+
+[dev-dependencies]
+axion-parser = { path = "../axion-parser" }

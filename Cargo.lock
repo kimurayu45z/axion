@@ -20,6 +20,7 @@ dependencies = [
  "axion-parser",
  "axion-resolve",
  "axion-syntax",
+ "axion-types",
  "serde_json",
 ]
 
@@ -52,6 +53,16 @@ dependencies = [
 [[package]]
 name = "axion-syntax"
 version = "0.1.0"
+
+[[package]]
+name = "axion-types"
+version = "0.1.0"
+dependencies = [
+ "axion-diagnostics",
+ "axion-parser",
+ "axion-resolve",
+ "axion-syntax",
+]
 
 [[package]]
 name = "itoa"

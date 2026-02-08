@@ -1,0 +1,414 @@
+use std::collections::HashMap;
+
+use axion_resolve::def_id::{DefId, SymbolKind};
+use axion_resolve::ResolveOutput;
+use axion_syntax::*;
+
+use crate::lower::lower_type_expr;
+use crate::ty::Ty;
+use crate::unify::UnifyContext;
+
+/// Type information for a single definition.
+#[derive(Debug, Clone)]
+pub struct TypeInfo {
+    pub ty: Ty,
+}
+
+/// The type environment built from the AST and resolution output.
+pub struct TypeEnv {
+    /// DefId → TypeInfo for all definitions.
+    pub defs: HashMap<DefId, TypeInfo>,
+    /// Struct DefId → list of (field_name, Ty).
+    pub struct_fields: HashMap<DefId, Vec<(String, Ty)>>,
+    /// Enum DefId → list of (variant_name, variant_DefId, fields: Vec<(field_name, Ty)>).
+    pub enum_variants: HashMap<DefId, Vec<(String, DefId, Vec<(String, Ty)>)>>,
+}
+
+impl TypeEnv {
+    /// Build the type environment from AST + resolve output.
+    pub(crate) fn build(
+        source_file: &SourceFile,
+        resolved: &ResolveOutput,
+        unify: &mut UnifyContext,
+    ) -> Self {
+        let mut env = TypeEnv {
+            defs: HashMap::new(),
+            struct_fields: HashMap::new(),
+            enum_variants: HashMap::new(),
+        };
+
+        let symbols = &resolved.symbols;
+        let resolutions = &resolved.resolutions;
+
+        // Register built-in functions (print, println) with a generic Fn signature.
+        for sym in symbols {
+            if sym.kind == SymbolKind::Function && sym.span == Span::dummy() {
+                // Built-in functions: accept any args, return Unit.
+                let ty = Ty::Fn {
+                    params: vec![Ty::Error], // variadic — accept anything
+                    ret: Box::new(Ty::Unit),
+                };
+                env.defs.insert(sym.def_id, TypeInfo { ty });
+            }
+        }
+
+        for item in &source_file.items {
+            env.register_item(item, symbols, resolutions, unify);
+        }
+
+        env
+    }
+
+    fn register_item(
+        &mut self,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        unify: &mut UnifyContext,
+    ) {
+        match &item.kind {
+            ItemKind::Function(f) => {
+                self.register_fn_def(f, item, symbols, resolutions, unify);
+            }
+            ItemKind::Method(m) => {
+                self.register_method_def(m, item, symbols, resolutions, unify);
+            }
+            ItemKind::Constructor(c) => {
+                self.register_constructor_def(c, item, symbols, resolutions, unify);
+            }
+            ItemKind::Struct(s) => {
+                self.register_struct_def(s, item, symbols, resolutions);
+            }
+            ItemKind::Enum(e) => {
+                self.register_enum_def(e, item, symbols, resolutions);
+            }
+            ItemKind::TypeAlias(ta) => {
+                self.register_type_alias(ta, item, symbols, resolutions);
+            }
+            ItemKind::Extern(ext) => {
+                self.register_extern_block(ext, symbols, resolutions, unify);
+            }
+            ItemKind::Interface(_) | ItemKind::Use(_) | ItemKind::Test(_) => {
+                // Interfaces, use decls, and tests don't need type env entries for now.
+            }
+        }
+    }
+
+    fn register_fn_def(
+        &mut self,
+        f: &FnDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        unify: &mut UnifyContext,
+    ) {
+        // Find the DefId for this function.
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&f.type_params, symbols, resolutions);
+
+        // Build parameter types.
+        let param_tys: Vec<Ty> = f
+            .params
+            .iter()
+            .map(|p| lower_type_expr(&p.ty, symbols, resolutions))
+            .collect();
+
+        // Build return type.
+        let ret_ty = match &f.return_type {
+            Some(te) => lower_type_expr(te, symbols, resolutions),
+            None => Ty::Unit,
+        };
+
+        let fn_ty = Ty::Fn {
+            params: param_tys,
+            ret: Box::new(ret_ty),
+        };
+        self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameters as local defs.
+        self.register_params(&f.params, symbols, resolutions, unify);
+    }
+
+    fn register_method_def(
+        &mut self,
+        m: &MethodDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        unify: &mut UnifyContext,
+    ) {
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&m.type_params, symbols, resolutions);
+
+        // Receiver type.
+        let receiver_ty = lower_type_expr(&m.receiver_type, symbols, resolutions);
+
+        // Build parameter types (receiver is implicit `self`).
+        let mut param_tys: Vec<Ty> = vec![receiver_ty];
+        for p in &m.params {
+            param_tys.push(lower_type_expr(&p.ty, symbols, resolutions));
+        }
+
+        // Return type.
+        let ret_ty = match &m.return_type {
+            Some(te) => lower_type_expr(te, symbols, resolutions),
+            None => Ty::Unit,
+        };
+
+        let fn_ty = Ty::Fn {
+            params: param_tys,
+            ret: Box::new(ret_ty),
+        };
+        self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameters.
+        self.register_params(&m.params, symbols, resolutions, unify);
+    }
+
+    fn register_constructor_def(
+        &mut self,
+        c: &ConstructorDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        unify: &mut UnifyContext,
+    ) {
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&c.type_params, symbols, resolutions);
+
+        // Build parameter types.
+        let param_tys: Vec<Ty> = c
+            .params
+            .iter()
+            .map(|p| lower_type_expr(&p.ty, symbols, resolutions))
+            .collect();
+
+        // Return type: if explicit, use it. Otherwise, look up the struct type.
+        let ret_ty = if let Some(te) = &c.return_type {
+            lower_type_expr(te, symbols, resolutions)
+        } else {
+            // Find the struct def_id for the type_name.
+            let struct_def = symbols
+                .iter()
+                .find(|s| s.name == c.type_name && s.kind == SymbolKind::Struct);
+            if let Some(s) = struct_def {
+                Ty::Struct {
+                    def_id: s.def_id,
+                    type_args: vec![],
+                }
+            } else {
+                Ty::Error
+            }
+        };
+
+        let fn_ty = Ty::Fn {
+            params: param_tys,
+            ret: Box::new(ret_ty),
+        };
+        self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+        // Register parameters.
+        self.register_params(&c.params, symbols, resolutions, unify);
+    }
+
+    fn register_struct_def(
+        &mut self,
+        s: &StructDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+    ) {
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&s.type_params, symbols, resolutions);
+
+        // Register struct fields.
+        let fields: Vec<(String, Ty)> = s
+            .fields
+            .iter()
+            .map(|f| {
+                let ty = lower_type_expr(&f.ty, symbols, resolutions);
+                (f.name.clone(), ty)
+            })
+            .collect();
+        self.struct_fields.insert(def_id, fields);
+
+        // Register the struct type itself.
+        let ty = Ty::Struct {
+            def_id,
+            type_args: vec![],
+        };
+        self.defs.insert(def_id, TypeInfo { ty });
+    }
+
+    fn register_enum_def(
+        &mut self,
+        e: &EnumDef,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+    ) {
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        // Register type params.
+        self.register_type_params(&e.type_params, symbols, resolutions);
+
+        // Register variants.
+        let mut variants = Vec::new();
+        for variant in &e.variants {
+            // Find the variant's DefId.
+            let variant_def = symbols.iter().find(|s| {
+                s.name == variant.name
+                    && s.kind == SymbolKind::EnumVariant
+                    && s.parent == Some(def_id)
+            });
+            let variant_def_id = variant_def.map(|s| s.def_id).unwrap_or(DefId(u32::MAX));
+
+            let fields: Vec<(String, Ty)> = variant
+                .fields
+                .iter()
+                .map(|f| {
+                    let ty = lower_type_expr(&f.ty, symbols, resolutions);
+                    (f.name.clone(), ty)
+                })
+                .collect();
+            variants.push((variant.name.clone(), variant_def_id, fields));
+        }
+        self.enum_variants.insert(def_id, variants);
+
+        // Register the enum type itself.
+        let ty = Ty::Enum {
+            def_id,
+            type_args: vec![],
+        };
+        self.defs.insert(def_id, TypeInfo { ty });
+    }
+
+    fn register_type_alias(
+        &mut self,
+        ta: &TypeAlias,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+    ) {
+        let def_id = self.find_def_id_for_item(item, symbols);
+        let Some(def_id) = def_id else { return };
+
+        let ty = lower_type_expr(&ta.ty, symbols, resolutions);
+        self.defs.insert(def_id, TypeInfo { ty });
+    }
+
+    fn register_extern_block(
+        &mut self,
+        ext: &ExternBlock,
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        unify: &mut UnifyContext,
+    ) {
+        for decl in &ext.decls {
+            // Find the DefId for this extern fn.
+            let def_id = symbols
+                .iter()
+                .find(|s| s.name == decl.name && s.kind == SymbolKind::ExternFn)
+                .map(|s| s.def_id);
+            let Some(def_id) = def_id else { continue };
+
+            let param_tys: Vec<Ty> = decl
+                .params
+                .iter()
+                .map(|p| lower_type_expr(&p.ty, symbols, resolutions))
+                .collect();
+
+            let ret_ty = match &decl.return_type {
+                Some(te) => lower_type_expr(te, symbols, resolutions),
+                None => Ty::Unit,
+            };
+
+            let fn_ty = Ty::Fn {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+            };
+            self.defs.insert(def_id, TypeInfo { ty: fn_ty });
+
+            // Register parameters.
+            self.register_params(&decl.params, symbols, resolutions, unify);
+        }
+    }
+
+    fn register_type_params(
+        &mut self,
+        type_params: &[TypeParam],
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+    ) {
+        for tp in type_params {
+            match tp {
+                TypeParam::Type { span, .. } => {
+                    if let Some(&def_id) = resolutions.get(&span.start) {
+                        self.defs.insert(def_id, TypeInfo { ty: Ty::Param(def_id) });
+                    }
+                }
+                TypeParam::Const { span, ty, .. } => {
+                    if let Some(&def_id) = resolutions.get(&span.start) {
+                        let ty = lower_type_expr(ty, symbols, resolutions);
+                        self.defs.insert(def_id, TypeInfo { ty });
+                    }
+                }
+                TypeParam::Dim { span, .. } => {
+                    if let Some(&def_id) = resolutions.get(&span.start) {
+                        self.defs.insert(def_id, TypeInfo { ty: Ty::Error });
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_params(
+        &mut self,
+        params: &[Param],
+        symbols: &[axion_resolve::symbol::Symbol],
+        resolutions: &HashMap<u32, DefId>,
+        _unify: &mut UnifyContext,
+    ) {
+        for param in params {
+            // Find the DefId for this parameter via its span.
+            if let Some(&def_id) = resolutions.get(&param.span.start) {
+                let ty = lower_type_expr(&param.ty, symbols, resolutions);
+                self.defs.insert(def_id, TypeInfo { ty });
+            } else {
+                // Try finding the param symbol by name among Param-kind symbols.
+                let param_sym = symbols.iter().find(|s| {
+                    s.name == param.name && s.kind == SymbolKind::Param && s.span == param.span
+                });
+                if let Some(sym) = param_sym {
+                    let ty = lower_type_expr(&param.ty, symbols, resolutions);
+                    self.defs.insert(sym.def_id, TypeInfo { ty });
+                }
+            }
+        }
+    }
+
+    /// Find the DefId for a top-level item by matching its span against symbols.
+    fn find_def_id_for_item(
+        &self,
+        item: &Item,
+        symbols: &[axion_resolve::symbol::Symbol],
+    ) -> Option<DefId> {
+        symbols
+            .iter()
+            .find(|s| s.span == item.span)
+            .map(|s| s.def_id)
+    }
+}

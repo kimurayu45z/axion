@@ -5,6 +5,7 @@ members = [
     "packages/axion-lexer",
     "packages/axion-parser",
     "packages/axion-resolve",
+    "packages/axion-types",
     "packages/axion-driver",
 ]
 resolver = "3"
