@@ -3,13 +3,13 @@ use axion_parser::parse;
 
 use crate::builtins::primitive_type_names;
 use crate::def_id::SymbolKind;
-use crate::resolve;
+use crate::resolve_single;
 
 /// Helper: parse + resolve, return diagnostics.
 fn resolve_source(src: &str) -> (crate::ResolveOutput, Vec<axion_diagnostics::Diagnostic>) {
     let (ast, parse_diags) = parse(src, "test.ax");
     assert!(parse_diags.is_empty(), "parse errors: {parse_diags:?}");
-    resolve(&ast, "test.ax", src)
+    resolve_single(&ast, "test.ax", src)
 }
 
 /// Helper: collect only errors (not warnings).

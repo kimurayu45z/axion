@@ -498,6 +498,12 @@ impl<'a> InferCtx<'a> {
                 _ => (def_id, false),
             }
         } else {
+            // Symbol not in local module — check TypeEnv for imported types.
+            if let Some(info) = self.env.defs.get(&def_id) {
+                if matches!(info.ty, Ty::Struct { .. }) {
+                    return (def_id, true);
+                }
+            }
             (def_id, false)
         }
     }

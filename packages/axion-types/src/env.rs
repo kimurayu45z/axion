@@ -35,8 +35,32 @@ pub struct TypeEnv {
 }
 
 impl TypeEnv {
+    /// Inject external definitions (e.g. from imported modules) into this environment.
+    pub fn inject_external(
+        &mut self,
+        defs: &std::collections::HashMap<DefId, TypeInfo>,
+        struct_fields: &std::collections::HashMap<DefId, Vec<(String, crate::ty::Ty)>>,
+        enum_variants: &std::collections::HashMap<DefId, Vec<(String, DefId, Vec<(String, crate::ty::Ty)>)>>,
+    ) {
+        for (id, info) in defs {
+            if !self.defs.contains_key(id) {
+                self.defs.insert(*id, info.clone());
+            }
+        }
+        for (id, fields) in struct_fields {
+            if !self.struct_fields.contains_key(id) {
+                self.struct_fields.insert(*id, fields.clone());
+            }
+        }
+        for (id, variants) in enum_variants {
+            if !self.enum_variants.contains_key(id) {
+                self.enum_variants.insert(*id, variants.clone());
+            }
+        }
+    }
+
     /// Build the type environment from AST + resolve output.
-    pub(crate) fn build(
+    pub fn build(
         source_file: &SourceFile,
         resolved: &ResolveOutput,
         unify: &mut UnifyContext,

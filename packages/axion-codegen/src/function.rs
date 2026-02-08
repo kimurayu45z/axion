@@ -1,0 +1,158 @@
+use axion_resolve::def_id::SymbolKind;
+use axion_syntax::*;
+use axion_types::ty::Ty;
+use inkwell::types::BasicType;
+
+use crate::context::CodegenCtx;
+use crate::expr::compile_expr;
+use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata};
+use crate::stmt::compile_stmt;
+
+/// Phase 1: Declare all functions (create LLVM function declarations).
+pub fn declare_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceFile) {
+    for item in &source_file.items {
+        if let ItemKind::Function(f) = &item.kind {
+            declare_fn(ctx, f, item.span);
+        }
+    }
+}
+
+fn declare_fn<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span) {
+    // Find the DefId for this function.
+    let def_id = ctx
+        .resolved
+        .symbols
+        .iter()
+        .find(|s| s.span == item_span && s.kind == SymbolKind::Function)
+        .map(|s| s.def_id);
+    let Some(def_id) = def_id else { return };
+
+    // Get the function type from TypeEnv.
+    let fn_ty = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    let Some(Ty::Fn { params, ret }) = fn_ty else {
+        return;
+    };
+
+    // Build LLVM function type.
+    let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
+        .iter()
+        .map(|t| ty_to_llvm_metadata(ctx, t))
+        .collect();
+
+    let fn_type = if is_void_ty(ret) {
+        ctx.context.void_type().fn_type(&param_types, false)
+    } else {
+        ty_to_llvm(ctx, ret).fn_type(&param_types, false)
+    };
+
+    let fn_value = ctx.module.add_function(&f.name, fn_type, None);
+    ctx.functions.insert(def_id, fn_value);
+}
+
+/// Phase 3: Compile function bodies.
+pub fn compile_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceFile) {
+    for item in &source_file.items {
+        if let ItemKind::Function(f) = &item.kind {
+            compile_fn_body(ctx, f, item.span);
+        }
+    }
+}
+
+fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span) {
+    // Find the DefId and LLVM function.
+    let def_id = ctx
+        .resolved
+        .symbols
+        .iter()
+        .find(|s| s.span == item_span && s.kind == SymbolKind::Function)
+        .map(|s| s.def_id);
+    let Some(def_id) = def_id else { return };
+    let Some(&fn_value) = ctx.functions.get(&def_id) else {
+        return;
+    };
+
+    // Get the return type.
+    let fn_ty = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    let ret_ty = match fn_ty {
+        Some(Ty::Fn { ret, .. }) => (**ret).clone(),
+        _ => Ty::Unit,
+    };
+
+    // Create entry basic block.
+    let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
+    ctx.builder.position_at_end(entry_bb);
+
+    // Clear locals for this function.
+    ctx.locals.clear();
+    ctx.local_types.clear();
+
+    // Alloca params as local variables.
+    for (i, param) in f.params.iter().enumerate() {
+        let param_sym = ctx
+            .resolved
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Param && s.span == param.span);
+
+        if let Some(sym) = param_sym {
+            let param_ty = fn_value.get_nth_param(i as u32);
+            if let Some(param_val) = param_ty {
+                let val_ty = param_val.get_type();
+                let alloca = ctx
+                    .builder
+                    .build_alloca(val_ty, &param.name)
+                    .unwrap();
+                ctx.builder.build_store(alloca, param_val).unwrap();
+                ctx.locals.insert(sym.def_id, alloca);
+                ctx.local_types.insert(sym.def_id, val_ty);
+            }
+        }
+    }
+
+    // Compile body statements.
+    let mut last_val = None;
+    for (i, stmt) in f.body.iter().enumerate() {
+        let is_last = i == f.body.len() - 1;
+        if is_last {
+            // The last statement might be an expression whose value we return.
+            if let StmtKind::Expr(expr) = &stmt.kind {
+                last_val = compile_expr(ctx, expr);
+            } else {
+                compile_stmt(ctx, stmt);
+            }
+        } else {
+            compile_stmt(ctx, stmt);
+        }
+
+        // Check if the current block is already terminated.
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_some()
+        {
+            break;
+        }
+    }
+
+    // Insert return if not already terminated.
+    if ctx
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_terminator()
+        .is_none()
+    {
+        if is_void_ty(&ret_ty) {
+            ctx.builder.build_return(None).unwrap();
+        } else if let Some(val) = last_val {
+            ctx.builder.build_return(Some(&val)).unwrap();
+        } else {
+            // Return default value.
+            let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
+            let zero = ret_llvm_ty.const_zero();
+            ctx.builder.build_return(Some(&zero)).unwrap();
+        }
+    }
+}

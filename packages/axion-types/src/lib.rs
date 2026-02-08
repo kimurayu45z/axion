@@ -1,7 +1,7 @@
 pub mod ty;
 pub mod errors;
 pub(crate) mod lower;
-pub(crate) mod unify;
+pub mod unify;
 pub mod env;
 pub(crate) mod infer;
 
@@ -27,12 +27,30 @@ pub struct TypeCheckOutput {
     pub field_resolutions: HashMap<u32, usize>,
 }
 
+/// External type information to inject before type checking (for cross-module imports).
+pub struct ExternalTypeInfo {
+    pub defs: HashMap<axion_resolve::def_id::DefId, env::TypeInfo>,
+    pub struct_fields: HashMap<axion_resolve::def_id::DefId, Vec<(String, ty::Ty)>>,
+    pub enum_variants: HashMap<axion_resolve::def_id::DefId, Vec<(String, axion_resolve::def_id::DefId, Vec<(String, ty::Ty)>)>>,
+}
+
 /// Run type checking on a parsed and resolved source file.
 pub fn type_check(
     source_file: &SourceFile,
     resolved: &ResolveOutput,
     file_name: &str,
     source: &str,
+) -> (TypeCheckOutput, Vec<Diagnostic>) {
+    type_check_with_imports(source_file, resolved, file_name, source, None)
+}
+
+/// Run type checking with optional external type imports.
+pub fn type_check_with_imports(
+    source_file: &SourceFile,
+    resolved: &ResolveOutput,
+    file_name: &str,
+    source: &str,
+    external: Option<&ExternalTypeInfo>,
 ) -> (TypeCheckOutput, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut unify = UnifyContext::new();
@@ -41,6 +59,11 @@ pub fn type_check(
 
     // Phase 1: Build type environment from all top-level definitions.
     let mut env = TypeEnv::build(source_file, resolved, &mut unify);
+
+    // Inject external type info if available.
+    if let Some(ext) = external {
+        env.inject_external(&ext.defs, &ext.struct_fields, &ext.enum_variants);
+    }
 
     // Phase 2: Type-check each function/method/constructor body.
     for item in &source_file.items {

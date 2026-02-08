@@ -1,7 +1,7 @@
 use crate::ty::{InferVar, Ty};
 
 /// The unification context manages inference variables and their substitutions.
-pub(crate) struct UnifyContext {
+pub struct UnifyContext {
     /// Substitution table: InferVar index → resolved Ty (or None if still unknown).
     substitutions: Vec<Option<Ty>>,
 }

@@ -662,8 +662,8 @@ fn resolve_dim_expr(ctx: &mut ResolveContext, dim: &DimExpr, scope: ScopeId) {
 fn resolve_interface_bound(ctx: &mut ResolveContext, bound: &InterfaceBound, scope: ScopeId) {
     if let Some(def_id) = ctx.scope_tree.lookup_type(scope, &bound.name) {
         // Verify it is actually an interface.
-        let kind = ctx.symbols[def_id.0 as usize].kind;
-        if kind != SymbolKind::Interface {
+        let kind = ctx.lookup_symbol(def_id).map(|s| s.kind);
+        if kind != Some(SymbolKind::Interface) && kind.is_some() {
             ctx.diagnostics.push(errors::not_an_interface(
                 &bound.name,
                 &ctx.file_name,

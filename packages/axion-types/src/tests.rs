@@ -7,7 +7,7 @@ use crate::unify::UnifyContext;
 
 fn check(source: &str) -> (crate::TypeCheckOutput, Vec<axion_diagnostics::Diagnostic>) {
     let (ast, _parse_diags) = parse(source, "test.ax");
-    let (resolved, _resolve_diags) = axion_resolve::resolve(&ast, "test.ax", source);
+    let (resolved, _resolve_diags) = axion_resolve::resolve_single(&ast, "test.ax", source);
     crate::type_check(&ast, &resolved, "test.ax", source)
 }
 
@@ -119,7 +119,7 @@ fn unify_fn_type() {
 fn lower_named_prim() {
     let source = "fn foo(x: i64) -> bool\n    true\n";
     let (ast, _) = parse(source, "test.ax");
-    let (resolved, _) = axion_resolve::resolve(&ast, "test.ax", source);
+    let (resolved, _) = axion_resolve::resolve_single(&ast, "test.ax", source);
     let te = &ast.items[0].kind;
     if let axion_syntax::ItemKind::Function(f) = te {
         let param_ty = crate::lower::lower_type_expr(
@@ -144,7 +144,7 @@ fn lower_named_prim() {
 fn lower_tuple_type() {
     let source = "fn foo(x: {i64, bool})\n    x\n";
     let (ast, _) = parse(source, "test.ax");
-    let (resolved, _) = axion_resolve::resolve(&ast, "test.ax", source);
+    let (resolved, _) = axion_resolve::resolve_single(&ast, "test.ax", source);
     if let axion_syntax::ItemKind::Function(f) = &ast.items[0].kind {
         let ty = crate::lower::lower_type_expr(
             &f.params[0].ty,
@@ -162,7 +162,7 @@ fn lower_tuple_type() {
 fn lower_fn_type() {
     let source = "fn apply(f: Fn(i64) -> bool)\n    f\n";
     let (ast, _) = parse(source, "test.ax");
-    let (resolved, _) = axion_resolve::resolve(&ast, "test.ax", source);
+    let (resolved, _) = axion_resolve::resolve_single(&ast, "test.ax", source);
     if let axion_syntax::ItemKind::Function(f) = &ast.items[0].kind {
         let ty = crate::lower::lower_type_expr(
             &f.params[0].ty,
@@ -750,7 +750,7 @@ fn main()
     42
 ";
     let (ast, _) = axion_parser::parse(source, "test.ax");
-    let (resolved, _) = axion_resolve::resolve(&ast, "test.ax", source);
+    let (resolved, _) = axion_resolve::resolve_single(&ast, "test.ax", source);
     let unify = &mut crate::unify::UnifyContext::new();
     let env = crate::env::TypeEnv::build(&ast, &resolved, unify);
     // Find the interface DefId and check methods are registered.

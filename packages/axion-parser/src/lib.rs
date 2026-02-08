@@ -2464,7 +2464,7 @@ impl Parser {
         self.expect(&TokenKind::Use)?;
 
         let mut path = Vec::new();
-        // First segment can be an ident or type ident
+        // First segment can be an ident, type ident, or `pkg` keyword
         match self.peek_kind() {
             Some(TokenKind::Ident(_)) => {
                 if let TokenKind::Ident(s) = self.advance_and_get() {
@@ -2475,6 +2475,10 @@ impl Parser {
                 if let TokenKind::TypeIdent(s) = self.advance_and_get() {
                     path.push(s);
                 }
+            }
+            Some(TokenKind::Pkg) => {
+                self.advance();
+                path.push("pkg".to_string());
             }
             _ => {
                 self.error("expected module path after `use`");
