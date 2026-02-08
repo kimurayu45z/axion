@@ -25,6 +25,24 @@ pub fn declare_intrinsics<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         .void_type()
         .fn_type(&[ctx.context.i32_type().into()], false);
     ctx.module.add_function("exit", exit_ty, None);
+
+    // int snprintf(char *buf, size_t size, const char *fmt, ...)
+    let snprintf_ty = ctx.context.i32_type().fn_type(
+        &[
+            ctx.context.ptr_type(AddressSpace::default()).into(),
+            ctx.context.i64_type().into(),
+            ctx.context.ptr_type(AddressSpace::default()).into(),
+        ],
+        true, // variadic
+    );
+    ctx.module.add_function("snprintf", snprintf_ty, None);
+
+    // void *malloc(size_t size)
+    let malloc_ty = ctx
+        .context
+        .ptr_type(AddressSpace::default())
+        .fn_type(&[ctx.context.i64_type().into()], false);
+    ctx.module.add_function("malloc", malloc_ty, None);
 }
 
 /// Get the printf function.

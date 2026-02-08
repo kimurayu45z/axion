@@ -186,3 +186,85 @@ fn main() -> i64
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 1);
 }
+
+#[test]
+fn compile_for_loop() {
+    let src = "\
+fn main() -> i64
+    let mut sum: i64 = 0
+    for i in 0..10
+        sum = sum + i
+    sum
+";
+    let result = compile_and_run(src);
+    // 0 + 1 + 2 + ... + 9 = 45
+    assert_eq!(result.exit_code, 45);
+}
+
+#[test]
+fn compile_string_interp() {
+    let src = "\
+fn main()
+    let name = \"world\"
+    println(\"hello {name}\")
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.stdout.trim(), "hello world");
+}
+
+#[test]
+fn compile_string_interp_int() {
+    let src = "\
+fn main()
+    let x: i64 = 42
+    println(\"x is {x}\")
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.stdout.trim(), "x is 42");
+}
+
+#[test]
+fn compile_enum_unit_variant() {
+    let src = "\
+enum Color
+    Red
+    Green
+    Blue
+
+fn color_code(c: Color) -> i64
+    match c
+        Color.Red => 1
+        Color.Green => 2
+        Color.Blue => 3
+        _ => 0
+
+fn main() -> i64
+    let c = Color.Green
+    color_code(c)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 2);
+}
+
+#[test]
+fn compile_enum_data_variant() {
+    let src = "\
+enum Shape
+    Circle(radius: i64)
+    Rect(width: i64, height: i64)
+
+fn area(s: Shape) -> i64
+    match s
+        Shape.Circle(r) => r * r
+        Shape.Rect(w, h) => w * h
+        _ => 0
+
+fn main() -> i64
+    let s = Shape.Rect(3, 4)
+    area(s)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 12);
+}

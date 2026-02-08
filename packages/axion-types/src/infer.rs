@@ -374,6 +374,33 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Check for enum variant access: e.g. Shape.Circle
+        if is_type_access {
+            if let Ty::Enum { def_id, .. } = &resolved {
+                if let Some(variants) = self.env.enum_variants.get(def_id).cloned() {
+                    if let Some((idx, (_, _, variant_fields))) = variants
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (vname, _, _))| vname == name)
+                    {
+                        self.field_resolutions.insert(span.start, idx);
+                        if variant_fields.is_empty() {
+                            // Unit variant: return the enum type directly.
+                            return resolved.clone();
+                        } else {
+                            // Data variant: return a constructor Fn type.
+                            let param_tys: Vec<Ty> =
+                                variant_fields.iter().map(|(_, ty)| ty.clone()).collect();
+                            return Ty::Fn {
+                                params: param_tys,
+                                ret: Box::new(resolved.clone()),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
         // Otherwise, try struct field access.
         match &resolved {
             Ty::Struct { def_id, .. } => {

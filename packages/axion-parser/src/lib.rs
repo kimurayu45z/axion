@@ -1053,7 +1053,7 @@ impl Parser {
                         continue;
                     }
                 }
-                let name = self.expect_ident()?;
+                let name = self.expect_any_ident()?;
                 let span = expr.span.merge(self.prev_span());
                 expr = Expr {
                     kind: ExprKind::Field {
