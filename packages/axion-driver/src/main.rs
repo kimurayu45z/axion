@@ -68,7 +68,11 @@ fn cmd_check(args: &[String]) {
         }
     };
 
-    let (_ast, diagnostics) = parse(&source, file_path);
+    let (ast, mut diagnostics) = parse(&source, file_path);
+
+    // Name resolution pass.
+    let (_resolved, resolve_diags) = axion_resolve::resolve(&ast, file_path, &source);
+    diagnostics.extend(resolve_diags);
 
     if json_output {
         let output = DiagnosticOutput::new(diagnostics);

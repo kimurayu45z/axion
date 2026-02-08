@@ -18,6 +18,7 @@ dependencies = [
  "axion-diagnostics",
  "axion-lexer",
  "axion-parser",
+ "axion-resolve",
  "axion-syntax",
  "serde_json",
 ]
@@ -36,6 +37,15 @@ version = "0.1.0"
 dependencies = [
  "axion-diagnostics",
  "axion-lexer",
+ "axion-syntax",
+]
+
+[[package]]
+name = "axion-resolve"
+version = "0.1.0"
+dependencies = [
+ "axion-diagnostics",
+ "axion-parser",
  "axion-syntax",
 ]
 
