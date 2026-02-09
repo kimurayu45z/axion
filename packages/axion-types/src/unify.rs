@@ -76,13 +76,18 @@ impl UnifyContext {
                     type_args: args2,
                 },
             ) => {
-                if d1 != d2 || args1.len() != args2.len() {
+                if d1 != d2 {
                     Err((a, b))
-                } else {
+                } else if args1.len() == args2.len() {
                     for (a1, b1) in args1.iter().zip(args2.iter()) {
                         self.unify(a1, b1)?;
                     }
                     Ok(())
+                } else if args1.is_empty() || args2.is_empty() {
+                    // One side has no type_args (e.g. from older code paths) — allow
+                    Ok(())
+                } else {
+                    Err((a, b))
                 }
             }
 

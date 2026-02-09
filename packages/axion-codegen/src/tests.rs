@@ -352,18 +352,21 @@ fn main() -> i64
 #[test]
 fn compile_generic_struct_bool() {
     // Test that a generic struct with bool fields has correct LLVM layout.
-    // The struct_to_llvm with type_args substitution should produce i8 fields for bool.
+    // Type inference now infers type_args from field values.
     let src = "\
 struct Pair[T]
     first: T
     second: T
 
 fn main() -> i64
-    0
+    let p = Pair #{first: true, second: false}
+    if p.first
+        1
+    else
+        0
 ";
-    let ir = compile_ir(src);
-    // The IR should compile without errors — generic struct definition is valid.
-    assert!(ir.contains("define"), "IR should contain function definitions");
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 1);
 }
 
 #[test]
@@ -450,4 +453,124 @@ fn main() -> i64
 ";
     let ir = compile_ir(src);
     assert!(!ir.contains("call void @free"), "IR should not contain free calls when there are no heap allocations");
+}
+
+#[test]
+fn compile_let_tuple_destructure() {
+    let src = "\
+fn make_pair() -> {i64, i64}
+    {10, 20}
+
+fn main() -> i64
+    let {a, b} = make_pair()
+    a + b
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn compile_let_tuple_nested() {
+    // Nested tuple destructuring in let binding.
+    let src = "\
+fn main() -> i64
+    let {a, {b, c}} = {1, {2, 3}}
+    a + b + c
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 6);
+}
+
+#[test]
+fn compile_match_tuple_bind() {
+    // Match arm with tuple pattern binding (no literal sub-patterns).
+    let src = "\
+fn swap(pair: {i64, i64}) -> {i64, i64}
+    match pair
+        {a, b} => {b, a}
+
+fn main() -> i64
+    let {x, y} = swap({10, 20})
+    x - y
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn compile_method_call() {
+    let src = "\
+struct Counter
+    val: i64
+
+fn@[Counter] increment(n: i64) -> Counter
+    Counter #{val: self.val + n}
+
+fn main() -> i64
+    let c = Counter #{val: 10}
+    let c2 = c.increment(5)
+    c2.val
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn compile_drop_called() {
+    // Test that a type with a `drop` method gets its drop called at function exit.
+    let src = "\
+struct Resource
+    id: i64
+
+fn@[Resource] drop()
+    0
+
+fn main() -> i64
+    let r = Resource #{id: 42}
+    r.id
+";
+    let ir = compile_ir(src);
+    assert!(ir.contains("call void @Resource.drop"), "IR should contain a drop call: {}", ir);
+}
+
+#[test]
+fn compile_drop_side_effect() {
+    // Test that drop method is actually invoked at runtime.
+    let src = r#"
+struct Droppable
+    val: i64
+
+fn@[Droppable] drop()
+    println("dropped")
+
+fn main()
+    let d = Droppable #{val: 1}
+    println("before")
+    let _ = d.val
+"#;
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 0);
+    let lines: Vec<&str> = result.stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "Expected 2 lines, got: {:?}", lines);
+    assert_eq!(lines[0], "before");
+    assert_eq!(lines[1], "dropped");
+}
+
+#[test]
+fn compile_slice_layout() {
+    // Test that Ty::Slice maps to a fat pointer { ptr, i64 } in LLVM IR.
+    let src = "\
+fn take_slice(s: &[i64]) -> i64
+    0
+
+fn main() -> i64
+    take_slice(0)
+";
+    let ir = compile_ir(src);
+    // The slice parameter should appear as { ptr, i64 } in the LLVM IR.
+    assert!(
+        ir.contains("{ ptr, i64 }"),
+        "IR should use fat pointer for slice: {}",
+        ir
+    );
 }

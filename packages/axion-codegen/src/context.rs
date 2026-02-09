@@ -41,6 +41,8 @@ pub struct CodegenCtx<'ctx> {
     pub current_subst: HashMap<DefId, Ty>,
     /// Heap-allocated pointers in the current function (for cleanup before return).
     pub heap_allocs: Vec<PointerValue<'ctx>>,
+    /// Locals that need drop calls at cleanup: (alloca pointer, LLVM type, drop FunctionValue).
+    pub drop_locals: Vec<(PointerValue<'ctx>, BasicTypeEnum<'ctx>, FunctionValue<'ctx>)>,
 }
 
 impl<'ctx> CodegenCtx<'ctx> {
@@ -73,6 +75,7 @@ impl<'ctx> CodegenCtx<'ctx> {
             mono_fn_values: HashMap::new(),
             current_subst: HashMap::new(),
             heap_allocs: Vec::new(),
+            drop_locals: Vec::new(),
         }
     }
 }

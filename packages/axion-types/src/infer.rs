@@ -403,12 +403,47 @@ impl<'a> InferCtx<'a> {
 
         // Otherwise, try struct field access.
         match &resolved {
-            Ty::Struct { def_id, .. } => {
+            Ty::Struct { def_id, type_args } => {
                 if let Some(fields) = self.env.struct_fields.get(def_id) {
+                    // Build substitution map from type params to type_args.
+                    let subst = if !type_args.is_empty() {
+                        let parent_sym = self
+                            .resolved
+                            .symbols
+                            .iter()
+                            .find(|s| s.def_id == *def_id);
+                        let param_ids: Vec<DefId> = if let Some(ps) = parent_sym {
+                            self.resolved
+                                .symbols
+                                .iter()
+                                .filter(|s| {
+                                    s.kind == SymbolKind::TypeParam
+                                        && s.name != "Self"
+                                        && s.span.start >= ps.span.start
+                                        && s.span.end <= ps.span.end
+                                })
+                                .map(|s| s.def_id)
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+                        let mut m = HashMap::new();
+                        for (pid, arg) in param_ids.iter().zip(type_args.iter()) {
+                            m.insert(*pid, arg.clone());
+                        }
+                        m
+                    } else {
+                        HashMap::new()
+                    };
                     for (i, (field_name, field_ty)) in fields.iter().enumerate() {
                         if field_name == name {
                             self.field_resolutions.insert(span.start, i);
-                            return field_ty.clone();
+                            let result_ty = if subst.is_empty() {
+                                field_ty.clone()
+                            } else {
+                                substitute(field_ty, &subst)
+                            };
+                            return result_ty;
                         }
                     }
                 }
@@ -632,6 +667,37 @@ impl<'a> InferCtx<'a> {
                 return Ty::Error;
             }
 
+            // Find type parameters for this struct and create fresh Infer vars.
+            let parent_sym = self
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.def_id == def_id);
+            let type_param_defs: Vec<DefId> = if let Some(ps) = parent_sym {
+                self.resolved
+                    .symbols
+                    .iter()
+                    .filter(|s| {
+                        s.kind == SymbolKind::TypeParam
+                            && s.name != "Self"
+                            && s.span.start >= ps.span.start
+                            && s.span.end <= ps.span.end
+                    })
+                    .map(|s| s.def_id)
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // Build substitution: Param(def_id) -> Infer(fresh_var) for each type param.
+            let mut subst: HashMap<DefId, Ty> = HashMap::new();
+            let mut infer_vars = Vec::new();
+            for &param_def_id in &type_param_defs {
+                let var = self.unify.fresh_var();
+                infer_vars.push(Ty::Infer(var));
+                subst.insert(param_def_id, Ty::Infer(var));
+            }
+
             // Check fields.
             if let Some(expected_fields) = self.env.struct_fields.get(&def_id).cloned() {
                 // Check for extra fields.
@@ -660,15 +726,20 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
-                // Type-check provided fields.
+                // Type-check provided fields, substituting type params with Infer vars.
                 for init in fields {
                     let init_ty = self.infer_expr(&init.value);
                     if let Some((_, expected_ty)) =
                         expected_fields.iter().find(|(n, _)| n == &init.name)
                     {
-                        if self.unify.unify(expected_ty, &init_ty).is_err() {
+                        let instantiated = if subst.is_empty() {
+                            expected_ty.clone()
+                        } else {
+                            substitute(expected_ty, &subst)
+                        };
+                        if self.unify.unify(&instantiated, &init_ty).is_err() {
                             self.diagnostics.push(errors::type_mismatch(
-                                &self.unify.resolve(expected_ty),
+                                &self.unify.resolve(&instantiated),
                                 &self.unify.resolve(&init_ty),
                                 self.file_name,
                                 init.span,
@@ -684,9 +755,15 @@ impl<'a> InferCtx<'a> {
                 }
             }
 
+            // Resolve infer vars to get concrete type_args.
+            let type_args: Vec<Ty> = infer_vars
+                .iter()
+                .map(|v| self.unify.resolve(v))
+                .collect();
+
             Ty::Struct {
                 def_id,
-                type_args: vec![],
+                type_args,
             }
         } else {
             // Unresolved struct name — infer field exprs to avoid cascading.

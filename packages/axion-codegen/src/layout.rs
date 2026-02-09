@@ -60,10 +60,21 @@ pub fn ty_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> BasicTypeEnum<'ctx> 
                 .ptr_type(AddressSpace::default())
                 .into()
         }
-        Ty::Ref(_) | Ty::Slice(_) => {
-            // Pointer
+        Ty::Ref(_) => {
             ctx.context
                 .ptr_type(AddressSpace::default())
+                .into()
+        }
+        Ty::Slice(_) => {
+            // Slice = fat pointer: { ptr, i64 len }
+            ctx.context
+                .struct_type(
+                    &[
+                        ctx.context.ptr_type(AddressSpace::default()).into(),
+                        ctx.context.i64_type().into(),
+                    ],
+                    false,
+                )
                 .into()
         }
         Ty::Param(_) | Ty::Infer(_) | Ty::Error => {

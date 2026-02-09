@@ -10,7 +10,7 @@ use inkwell::AddressSpace;
 use crate::context::CodegenCtx;
 use crate::intrinsics::build_printf_call;
 use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata, variant_struct_type, enum_max_payload_bytes, build_subst_map};
-use crate::stmt::compile_stmt;
+use crate::stmt::{compile_stmt, bind_pattern_value};
 
 /// Compile an expression and return its LLVM value (None for void expressions).
 pub fn compile_expr<'ctx>(
@@ -197,6 +197,20 @@ fn compile_ident<'ctx>(
     }
 
     None
+}
+
+/// Get the type name for method/constructor lookups (mirrors type checker logic).
+fn get_type_name_for_method_ctx<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Struct { def_id, .. } | Ty::Enum { def_id, .. } => {
+            ctx.resolved
+                .symbols
+                .iter()
+                .find(|s| s.def_id == *def_id)
+                .map(|s| s.name.clone())
+        }
+        _ => None,
+    }
 }
 
 fn get_expr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
@@ -545,10 +559,48 @@ fn compile_call<'ctx>(
     }
 
     // Check for enum variant construction: Shape.Circle(5.0)
-    if let ExprKind::Field { expr: inner, name: _variant_name } = &func.kind {
+    // or method call: obj.method(args)
+    if let ExprKind::Field { expr: inner, name: field_name } = &func.kind {
         let inner_ty = get_expr_ty(ctx, inner);
         if let Ty::Enum { def_id, .. } = &inner_ty {
             return compile_enum_data_variant(ctx, *def_id, func, args);
+        }
+        // Check for method call.
+        if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
+            let method_key = format!("{}.{}", type_name, field_name);
+            let method_def_id = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
+                .map(|s| s.def_id);
+            if let Some(def_id) = method_def_id {
+                if let Some(&fn_value) = ctx.functions.get(&def_id) {
+                    // Compile receiver (self) as first arg.
+                    let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
+                    if let Some(receiver) = compile_expr(ctx, inner) {
+                        compiled_args.push(receiver.into());
+                    }
+                    for arg in args {
+                        if let Some(val) = compile_expr(ctx, &arg.expr) {
+                            compiled_args.push(val.into());
+                        }
+                    }
+                    let ret_ty = get_expr_ty(ctx, call_expr);
+                    if is_void_ty(&ret_ty) {
+                        ctx.builder
+                            .build_call(fn_value, &compiled_args, "mcall")
+                            .unwrap();
+                        return None;
+                    } else {
+                        let call_val = ctx
+                            .builder
+                            .build_call(fn_value, &compiled_args, "mcall")
+                            .unwrap();
+                        return call_val.try_as_basic_value().left();
+                    }
+                }
+            }
         }
     }
 
@@ -1792,6 +1844,12 @@ fn compile_match<'ctx>(
                     next_bb,
                 );
                 ctx.builder.position_at_end(arm_bb);
+            }
+            PatternKind::TuplePattern(_) | PatternKind::Struct { .. } => {
+                // Tuple and struct patterns always match (no condition check).
+                ctx.builder.build_unconditional_branch(arm_bb).unwrap();
+                ctx.builder.position_at_end(arm_bb);
+                bind_pattern_value(ctx, &arm.pattern, scrutinee_val, &scrutinee_ty);
             }
             _ => {
                 ctx.builder.build_unconditional_branch(arm_bb).unwrap();
