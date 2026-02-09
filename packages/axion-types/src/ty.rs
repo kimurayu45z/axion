@@ -21,6 +21,8 @@ pub enum Ty {
     Ref(Box<Ty>),
     /// Slice type: `&[T]`
     Slice(Box<Ty>),
+    /// Fixed-size array type: `[i64; 3]`
+    Array { elem: Box<Ty>, len: u64 },
     /// Type parameter (generic): `T` — indexed by DefId
     Param(DefId),
     /// Inference variable (unresolved) — filled by unification
@@ -207,6 +209,7 @@ impl fmt::Display for Ty {
             }
             Ty::Ref(inner) => write!(f, "&{inner}"),
             Ty::Slice(inner) => write!(f, "&[{inner}]"),
+            Ty::Array { elem, len } => write!(f, "[{elem}; {len}]"),
             Ty::Param(def_id) => write!(f, "Param({})", def_id.0),
             Ty::Infer(v) => write!(f, "?{}", v.0),
             Ty::Error => write!(f, "<error>"),

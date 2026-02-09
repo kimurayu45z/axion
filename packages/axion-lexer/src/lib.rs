@@ -342,6 +342,7 @@ impl<'src> Lexer<'src> {
             b'}' => { self.advance(); Some(Token { kind: TokenKind::RBrace, span: Span::new(start as u32, self.pos as u32) }) }
             b',' => { self.advance(); Some(Token { kind: TokenKind::Comma, span: Span::new(start as u32, self.pos as u32) }) }
             b':' => { self.advance(); Some(Token { kind: TokenKind::Colon, span: Span::new(start as u32, self.pos as u32) }) }
+            b';' => { self.advance(); Some(Token { kind: TokenKind::Semi, span: Span::new(start as u32, self.pos as u32) }) }
             b'@' => { self.advance(); Some(Token { kind: TokenKind::At, span: Span::new(start as u32, self.pos as u32) }) }
 
             _ => {

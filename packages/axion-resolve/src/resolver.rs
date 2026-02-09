@@ -574,6 +574,17 @@ fn resolve_expr(ctx: &mut ResolveContext, expr: &Expr, scope: ScopeId) {
                 resolve_type_expr(ctx, ty, scope);
             }
         }
+
+        ExprKind::ArrayLit(elems) => {
+            for e in elems {
+                resolve_expr(ctx, e, scope);
+            }
+        }
+
+        ExprKind::Index { expr: inner, index } => {
+            resolve_expr(ctx, inner, scope);
+            resolve_expr(ctx, index, scope);
+        }
     }
 }
 
@@ -618,6 +629,10 @@ fn resolve_type_expr(ctx: &mut ResolveContext, ty: &TypeExpr, scope: ScopeId) {
         }
 
         TypeExpr::Slice { inner, .. } => {
+            resolve_type_expr(ctx, inner, scope);
+        }
+
+        TypeExpr::Array { inner, .. } => {
             resolve_type_expr(ctx, inner, scope);
         }
 

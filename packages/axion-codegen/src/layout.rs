@@ -4,7 +4,7 @@ use axion_mono::specialize::substitute;
 use axion_resolve::def_id::{DefId, SymbolKind};
 use axion_types::ty::{PrimTy, Ty};
 use inkwell::context::Context;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::AddressSpace;
 
 use crate::context::CodegenCtx;
@@ -76,6 +76,10 @@ pub fn ty_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> BasicTypeEnum<'ctx> 
                     false,
                 )
                 .into()
+        }
+        Ty::Array { elem, len } => {
+            let elem_llvm = ty_to_llvm(ctx, elem);
+            elem_llvm.array_type(*len as u32).into()
         }
         Ty::Param(_) | Ty::Infer(_) | Ty::Error => {
             // Fallback: i64

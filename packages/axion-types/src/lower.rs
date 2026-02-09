@@ -121,6 +121,11 @@ pub(crate) fn lower_type_expr(
             Ty::Slice(Box::new(inner_ty))
         }
 
+        TypeExpr::Array { inner, size, .. } => {
+            let elem_ty = lower_type_expr(inner, symbols, resolutions);
+            Ty::Array { elem: Box::new(elem_ty), len: *size }
+        }
+
         TypeExpr::Dyn { .. } => {
             // Dynamic dispatch — defer
             Ty::Error

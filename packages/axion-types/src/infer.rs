@@ -126,6 +126,10 @@ impl<'a> InferCtx<'a> {
                 }
                 Ty::Prim(PrimTy::Str)
             }
+            ExprKind::ArrayLit(elems) => self.infer_array_lit(elems),
+            ExprKind::Index { expr: arr_expr, index } => {
+                self.infer_index(arr_expr, index, expr.span)
+            }
             ExprKind::MapLit(entries) => {
                 for entry in entries {
                     self.infer_expr(&entry.key);
@@ -648,6 +652,72 @@ impl<'a> InferCtx<'a> {
         } else {
             let elem_tys: Vec<Ty> = elems.iter().map(|e| self.infer_expr(e)).collect();
             Ty::Tuple(elem_tys)
+        }
+    }
+
+    fn infer_array_lit(&mut self, elems: &[Expr]) -> Ty {
+        if elems.is_empty() {
+            return Ty::Array {
+                elem: Box::new(Ty::Error),
+                len: 0,
+            };
+        }
+        let first_ty = self.infer_expr(&elems[0]);
+        for elem in &elems[1..] {
+            let elem_ty = self.infer_expr(elem);
+            if self.unify.unify(&first_ty, &elem_ty).is_err() {
+                self.diagnostics.push(errors::type_mismatch(
+                    &self.unify.resolve(&first_ty),
+                    &self.unify.resolve(&elem_ty),
+                    self.file_name,
+                    elem.span,
+                    self.source,
+                ));
+            }
+        }
+        Ty::Array {
+            elem: Box::new(self.unify.resolve(&first_ty)),
+            len: elems.len() as u64,
+        }
+    }
+
+    fn infer_index(&mut self, arr_expr: &Expr, index: &Expr, span: Span) -> Ty {
+        let arr_ty = self.infer_expr(arr_expr);
+        let index_ty = self.infer_expr(index);
+        let resolved_arr = self.unify.resolve(&arr_ty);
+
+        // Check that index is an integer type.
+        match &index_ty {
+            Ty::Prim(p) if p.is_integer() => {}
+            Ty::Infer(_) => {
+                // Default to i64.
+                let _ = self.unify.unify(&index_ty, &Ty::Prim(PrimTy::I64));
+            }
+            Ty::Error => {}
+            _ => {
+                self.diagnostics.push(errors::type_mismatch(
+                    &Ty::Prim(PrimTy::I64),
+                    &self.unify.resolve(&index_ty),
+                    self.file_name,
+                    index.span,
+                    self.source,
+                ));
+            }
+        }
+
+        match &resolved_arr {
+            Ty::Array { elem, .. } => *elem.clone(),
+            Ty::Error => Ty::Error,
+            _ => {
+                self.diagnostics.push(errors::type_mismatch(
+                    &Ty::Error,
+                    &resolved_arr,
+                    self.file_name,
+                    span,
+                    self.source,
+                ));
+                Ty::Error
+            }
         }
     }
 
@@ -1534,6 +1604,10 @@ fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
         },
         Ty::Ref(inner) => Ty::Ref(Box::new(substitute(inner, subst))),
         Ty::Slice(inner) => Ty::Slice(Box::new(substitute(inner, subst))),
+        Ty::Array { elem, len } => Ty::Array {
+            elem: Box::new(substitute(elem, subst)),
+            len: *len,
+        },
         _ => ty.clone(),
     }
 }

@@ -110,6 +110,10 @@ pub fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
         },
         Ty::Ref(inner) => Ty::Ref(Box::new(substitute(inner, subst))),
         Ty::Slice(inner) => Ty::Slice(Box::new(substitute(inner, subst))),
+        Ty::Array { elem, len } => Ty::Array {
+            elem: Box::new(substitute(elem, subst)),
+            len: *len,
+        },
         _ => ty.clone(),
     }
 }
@@ -140,6 +144,7 @@ fn ty_to_suffix(ty: &Ty) -> String {
             format!("fn_{}_r_{}", p.join("_"), ty_to_suffix(ret))
         }
         Ty::Ref(inner) => format!("ref_{}", ty_to_suffix(inner)),
+        Ty::Array { elem, len } => format!("arr_{}_{}", len, ty_to_suffix(elem)),
         Ty::Param(def_id) => format!("p{}", def_id.0),
         _ => "unknown".to_string(),
     }

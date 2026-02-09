@@ -509,6 +509,28 @@ impl Parser {
             });
         }
 
+        // Array type: [T; N]
+        if self.check(&TokenKind::LBracket) {
+            self.advance();
+            let inner = self.parse_type_expr()?;
+            self.expect(&TokenKind::Semi)?;
+            // Parse the size as an integer literal
+            if let Some(TokenKind::IntLit(s)) = self.peek_kind() {
+                let s = s.clone();
+                self.advance();
+                let size: u64 = s.replace('_', "").parse().unwrap_or(0);
+                self.expect(&TokenKind::RBracket)?;
+                return Some(TypeExpr::Array {
+                    inner: Box::new(inner),
+                    size,
+                    span: span.merge(self.prev_span()),
+                });
+            } else {
+                self.error("expected integer literal for array size");
+                return None;
+            }
+        }
+
         // Primitive type (lowercase ident): i64, str, bool, etc.
         if let Some(TokenKind::Ident(ref s)) = self.peek_kind() {
             if TokenKind::is_primitive_type(s) {
@@ -1082,25 +1104,61 @@ impl Parser {
                     span,
                 };
             } else if self.check(&TokenKind::LBracket) {
-                // Turbofish type application: `f[T](args)`, `HashMap[K, V].new()`
-                self.advance();
-                let mut type_args = Vec::new();
-                if !self.check(&TokenKind::RBracket) {
-                    type_args.push(self.parse_type_expr()?);
-                    while self.check(&TokenKind::Comma) {
-                        self.advance();
-                        type_args.push(self.parse_type_expr()?);
+                // Determine: TypeApp vs Index
+                // TypeApp if: left side is TypeIdent/primitive, or content starts with a type token
+                let is_type_app = match &expr.kind {
+                    ExprKind::Ident(name) => {
+                        name.chars().next().map_or(false, |c| c.is_uppercase())
+                            || TokenKind::is_primitive_type(name)
                     }
-                }
-                self.expect(&TokenKind::RBracket)?;
-                let span = expr.span.merge(self.prev_span());
-                expr = Expr {
-                    kind: ExprKind::TypeApp {
-                        expr: Box::new(expr),
-                        type_args,
-                    },
-                    span,
+                    ExprKind::TypeApp { .. } => true,
+                    _ => false,
                 };
+                // If not decided by left-side, peek inside brackets:
+                // If content is a type (TypeIdent or primitive), treat as TypeApp
+                let is_type_app = is_type_app || {
+                    match self.peek_at_kind(1) {
+                        Some(TokenKind::TypeIdent(_)) => true,
+                        Some(TokenKind::Ident(ref s)) => TokenKind::is_primitive_type(s),
+                        Some(TokenKind::Amp) => true, // &Type
+                        Some(TokenKind::LBracket) => true, // [T; N] array type
+                        _ => false,
+                    }
+                };
+                if is_type_app {
+                    // Turbofish type application: `f[T](args)`, `HashMap[K, V].new()`
+                    self.advance();
+                    let mut type_args = Vec::new();
+                    if !self.check(&TokenKind::RBracket) {
+                        type_args.push(self.parse_type_expr()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.advance();
+                            type_args.push(self.parse_type_expr()?);
+                        }
+                    }
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = expr.span.merge(self.prev_span());
+                    expr = Expr {
+                        kind: ExprKind::TypeApp {
+                            expr: Box::new(expr),
+                            type_args,
+                        },
+                        span,
+                    };
+                } else {
+                    // Index access: `arr[i]`
+                    self.advance(); // consume [
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = expr.span.merge(self.prev_span());
+                    expr = Expr {
+                        kind: ExprKind::Index {
+                            expr: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                        span,
+                    };
+                }
             } else if self.check(&TokenKind::Question) {
                 self.advance();
                 let span = expr.span.merge(self.prev_span());
@@ -1405,6 +1463,27 @@ impl Parser {
             }
             // #{...}: struct literal, map literal, or set literal
             Some(TokenKind::HashLBrace) => self.parse_hash_brace_expr(),
+            // Array literal: [expr, expr, ...]
+            Some(TokenKind::LBracket) => {
+                self.advance(); // consume [
+                if self.check(&TokenKind::RBracket) {
+                    self.advance();
+                    return Some(Expr {
+                        kind: ExprKind::ArrayLit(Vec::new()),
+                        span: span.merge(self.prev_span()),
+                    });
+                }
+                let mut elements = vec![self.parse_expr()?];
+                while self.check(&TokenKind::Comma) {
+                    self.advance();
+                    elements.push(self.parse_expr()?);
+                }
+                self.expect(&TokenKind::RBracket)?;
+                Some(Expr {
+                    kind: ExprKind::ArrayLit(elements),
+                    span: span.merge(self.prev_span()),
+                })
+            }
             _ => {
                 self.error("expected expression");
                 None

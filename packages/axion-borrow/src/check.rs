@@ -338,6 +338,15 @@ impl<'a> BorrowCtx<'a> {
                     self.check_expr(e);
                 }
             }
+            ExprKind::ArrayLit(elems) => {
+                for e in elems {
+                    self.check_expr(e);
+                }
+            }
+            ExprKind::Index { expr: inner, index } => {
+                self.check_expr(inner);
+                self.check_expr(index);
+            }
             // Literals don't need borrow checking.
             ExprKind::IntLit(..)
             | ExprKind::FloatLit(..)

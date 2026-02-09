@@ -106,6 +106,7 @@ pub enum TokenKind {
     HashLBrace, // #{
     Comma,      // ,
     Colon,      // :
+    Semi,       // ;
     Dot,        // .
 
     // --- Layout ---

@@ -248,6 +248,7 @@ fn type_expr_span(te: &TypeExpr) -> Span {
         | TypeExpr::Slice { span, .. }
         | TypeExpr::Dyn { span, .. }
         | TypeExpr::Active { span, .. }
+        | TypeExpr::Array { span, .. }
         | TypeExpr::DimApply { span, .. } => *span,
     }
 }

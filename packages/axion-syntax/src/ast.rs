@@ -183,6 +183,12 @@ pub enum TypeExpr {
         fields: Vec<String>,
         span: Span,
     },
+    /// Array type: `[i64; 3]`
+    Array {
+        inner: Box<TypeExpr>,
+        size: u64,
+        span: Span,
+    },
     /// Dimension-applied type: `Tensor[f32][M, K]`
     DimApply {
         base: Box<TypeExpr>,
@@ -505,6 +511,13 @@ pub enum ExprKind {
     TypeApp {
         expr: Box<Expr>,
         type_args: Vec<TypeExpr>,
+    },
+    /// Array literal: `[1, 2, 3]`
+    ArrayLit(Vec<Expr>),
+    /// Index access: `arr[i]`
+    Index {
+        expr: Box<Expr>,
+        index: Box<Expr>,
     },
 }
 

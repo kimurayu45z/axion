@@ -574,3 +574,59 @@ fn main() -> i64
         ir
     );
 }
+
+#[test]
+fn compile_array_lit_basic() {
+    // [10, 20, 30] → arr[1] == 20
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30]
+    arr[1]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_array_index_computed() {
+    // Computed index
+    let src = "\
+fn main() -> i64
+    let arr = [5, 10, 15, 20]
+    let i: i64 = 2
+    arr[i]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn compile_array_sum() {
+    // Sum array elements using while loop
+    let src = "\
+fn main() -> i64
+    let arr = [1, 2, 3, 4, 5]
+    let mut sum: i64 = 0
+    let mut i: i64 = 0
+    while i < 5
+        sum = sum + arr[i]
+        i = i + 1
+    sum
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn compile_array_type_annotation() {
+    // Array type annotation in function parameter
+    let src = "\
+fn first(arr: [i64; 3]) -> i64
+    arr[0]
+
+fn main() -> i64
+    first([10, 20, 30])
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}

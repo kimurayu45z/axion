@@ -71,6 +71,8 @@ pub fn compile_expr<'ctx>(
         ExprKind::Ref(inner) => compile_expr(ctx, inner),
         ExprKind::StringInterp { parts } => compile_string_interp(ctx, parts),
         ExprKind::TypeApp { expr: inner, .. } => compile_expr(ctx, inner),
+        ExprKind::ArrayLit(elems) => compile_array_lit(ctx, expr, elems),
+        ExprKind::Index { expr: arr_expr, index } => compile_index(ctx, expr, arr_expr, index),
         ExprKind::MapLit(_) | ExprKind::SetLit(_) => None,
         ExprKind::Handle { .. } | ExprKind::Try(_) | ExprKind::Await(_) => None,
     }
@@ -1084,6 +1086,7 @@ fn type_expr_span(te: &TypeExpr) -> Span {
         | TypeExpr::Slice { span, .. }
         | TypeExpr::Dyn { span, .. }
         | TypeExpr::Active { span, .. }
+        | TypeExpr::Array { span, .. }
         | TypeExpr::DimApply { span, .. } => *span,
     }
 }
@@ -1303,6 +1306,15 @@ fn collect_captures_expr<'ctx>(
             if let Some(m) = message {
                 collect_captures_expr(ctx, m, closure_param_ids, captures, seen);
             }
+        }
+        ExprKind::ArrayLit(elems) => {
+            for e in elems {
+                collect_captures_expr(ctx, e, closure_param_ids, captures, seen);
+            }
+        }
+        ExprKind::Index { expr: inner, index } => {
+            collect_captures_expr(ctx, inner, closure_param_ids, captures, seen);
+            collect_captures_expr(ctx, index, closure_param_ids, captures, seen);
         }
         ExprKind::Closure { body, .. } => {
             for s in body {
@@ -1750,6 +1762,92 @@ fn compile_tuple_lit<'ctx>(
         }
     }
     Some(tuple_val.into())
+}
+
+fn compile_array_lit<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    expr: &Expr,
+    elems: &[Expr],
+) -> Option<BasicValueEnum<'ctx>> {
+    let arr_ty = get_expr_ty(ctx, expr);
+    let llvm_ty = ty_to_llvm(ctx, &arr_ty);
+    let arr_llvm_ty = llvm_ty.into_array_type();
+    let mut arr_val = arr_llvm_ty.const_zero();
+    for (i, elem) in elems.iter().enumerate() {
+        if let Some(val) = compile_expr(ctx, elem) {
+            arr_val = ctx
+                .builder
+                .build_insert_value(arr_val, val, i as u32, "arr_elem")
+                .unwrap()
+                .into_array_value();
+        }
+    }
+    Some(arr_val.into())
+}
+
+fn compile_index<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    _expr: &Expr,
+    arr_expr: &Expr,
+    index: &Expr,
+) -> Option<BasicValueEnum<'ctx>> {
+    let index_val = compile_expr(ctx, index)?;
+
+    // For index access, we need the alloca directly (to GEP into it).
+    // Get the alloca and its LLVM type from the local variable.
+    if let ExprKind::Ident(_) = &arr_expr.kind {
+        let def_id = ctx.resolved.resolutions.get(&arr_expr.span.start)?;
+        let alloca = ctx.locals.get(def_id).copied()?;
+        let arr_llvm_ty = ctx.local_types.get(def_id).copied()?;
+
+        // Verify it's an array type
+        if !arr_llvm_ty.is_array_type() {
+            return None;
+        }
+        let elem_llvm_ty = arr_llvm_ty.into_array_type().get_element_type();
+
+        let zero = ctx.context.i64_type().const_zero();
+        let idx = index_val.into_int_value();
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(arr_llvm_ty, alloca, &[zero, idx], "arr_idx")
+                .unwrap()
+        };
+
+        let loaded = ctx
+            .builder
+            .build_load(elem_llvm_ty, elem_ptr, "arr_elem")
+            .unwrap();
+        return Some(loaded);
+    }
+
+    // Fallback for non-ident array expressions: compile, alloca + store, then GEP
+    let arr_val = compile_expr(ctx, arr_expr)?;
+    let arr_llvm_ty = arr_val.get_type();
+    if !arr_llvm_ty.is_array_type() {
+        return None;
+    }
+    let elem_llvm_ty = arr_llvm_ty.into_array_type().get_element_type();
+
+    let alloca = ctx
+        .builder
+        .build_alloca(arr_llvm_ty, "arr_tmp")
+        .unwrap();
+    ctx.builder.build_store(alloca, arr_val).unwrap();
+
+    let zero = ctx.context.i64_type().const_zero();
+    let idx = index_val.into_int_value();
+    let elem_ptr = unsafe {
+        ctx.builder
+            .build_in_bounds_gep(arr_llvm_ty, alloca, &[zero, idx], "arr_idx")
+            .unwrap()
+    };
+
+    let loaded = ctx
+        .builder
+        .build_load(elem_llvm_ty, elem_ptr, "arr_elem")
+        .unwrap();
+    Some(loaded)
 }
 
 fn compile_match<'ctx>(
