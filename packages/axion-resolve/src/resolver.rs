@@ -195,13 +195,28 @@ fn resolve_enum_def(ctx: &mut ResolveContext, e: &EnumDef, parent: ScopeId) {
 }
 
 fn resolve_interface_def(ctx: &mut ResolveContext, iface: &InterfaceDef, parent: ScopeId) {
-    let scope = if iface.type_params.is_empty() {
-        parent
-    } else {
-        let sc = ctx.scope_tree.push_scope(ScopeKind::Block, Some(parent));
-        register_type_params(ctx, &iface.type_params, sc);
-        sc
-    };
+    // Always push a scope for Self and optional type params.
+    let scope = ctx.scope_tree.push_scope(ScopeKind::Block, Some(parent));
+    if !iface.type_params.is_empty() {
+        register_type_params(ctx, &iface.type_params, scope);
+    }
+
+    // Register `Self` as an implicit type parameter for the interface.
+    // Use a span inside the interface def so env.rs can locate it.
+    let iface_def_id = ctx.scope_tree.lookup_type(parent, &iface.name);
+    let iface_span = iface_def_id
+        .and_then(|did| ctx.lookup_symbol(did))
+        .map(|s| s.span)
+        .unwrap_or(Span::dummy());
+    let self_def = ctx.alloc_symbol(
+        "Self".to_string(),
+        SymbolKind::TypeParam,
+        Visibility::Private,
+        iface_span,
+        iface_def_id,
+    );
+    ctx.scope_tree.insert_type(scope, "Self".to_string(), self_def);
+
     for method in &iface.methods {
         for p in &method.params {
             resolve_type_expr(ctx, &p.ty, scope);

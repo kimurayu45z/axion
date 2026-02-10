@@ -26,6 +26,8 @@ pub struct TypeEnv {
     pub interface_methods: HashMap<DefId, Vec<(String, Ty)>>,
     /// TypeParam DefId → list of interface DefId bounds.
     pub type_param_bounds: HashMap<DefId, Vec<DefId>>,
+    /// (TypeParam DefId, Interface DefId) → list of bound type args (e.g. Iterator[i64] → [i64]).
+    pub interface_bound_type_args: HashMap<(DefId, DefId), Vec<Ty>>,
     /// Function/Method DefId → list of ParamModifiers for each param.
     pub param_modifiers: HashMap<DefId, Vec<ParamModifier>>,
     /// Method DefId → ReceiverModifier.
@@ -71,6 +73,7 @@ impl TypeEnv {
             enum_variants: HashMap::new(),
             interface_methods: HashMap::new(),
             type_param_bounds: HashMap::new(),
+            interface_bound_type_args: HashMap::new(),
             param_modifiers: HashMap::new(),
             receiver_modifiers: HashMap::new(),
             fn_effects: HashMap::new(),
@@ -437,15 +440,22 @@ impl TypeEnv {
                         if !bounds.is_empty() {
                             let mut bound_def_ids = Vec::new();
                             for bound in bounds {
-                                if let Some(&iface_def_id) = resolutions.get(&bound.span.start) {
-                                    bound_def_ids.push(iface_def_id);
+                                let iface_def_id = if let Some(&id) = resolutions.get(&bound.span.start) {
+                                    Some(id)
                                 } else {
                                     // Fall back to finding the interface by name.
-                                    let iface_sym = symbols.iter().find(|s| {
+                                    symbols.iter().find(|s| {
                                         s.name == bound.name && s.kind == SymbolKind::Interface
-                                    });
-                                    if let Some(sym) = iface_sym {
-                                        bound_def_ids.push(sym.def_id);
+                                    }).map(|s| s.def_id)
+                                };
+                                if let Some(iface_def_id) = iface_def_id {
+                                    bound_def_ids.push(iface_def_id);
+                                    // Store bound type args (e.g. Iterator[i64] → [i64]).
+                                    if !bound.args.is_empty() {
+                                        let bound_args: Vec<Ty> = bound.args.iter()
+                                            .map(|a| lower_type_expr(a, symbols, resolutions))
+                                            .collect();
+                                        self.interface_bound_type_args.insert((def_id, iface_def_id), bound_args);
                                     }
                                 }
                             }
@@ -492,14 +502,36 @@ impl TypeEnv {
         // Register type params.
         self.register_type_params(&iface.type_params, symbols, resolutions);
 
+        // Find the interface's implicit Self type parameter.
+        let iface_sym = symbols.iter().find(|s| s.def_id == def_id);
+        let self_ty = iface_sym.and_then(|is| {
+            symbols.iter().find(|s| {
+                s.kind == SymbolKind::TypeParam
+                    && s.name == "Self"
+                    && s.span.start >= is.span.start
+                    && s.span.end <= is.span.end
+            })
+        }).map(|s| Ty::Param(s.def_id));
+
         // Lower each InterfaceMethod to a (name, Fn type) entry.
         let mut methods = Vec::new();
         for method in &iface.methods {
-            let param_tys: Vec<Ty> = method
+            let explicit_params: Vec<Ty> = method
                 .params
                 .iter()
                 .map(|p| lower_type_expr(&p.ty, symbols, resolutions))
                 .collect();
+            // If the method has a receiver (self), prepend Self as the first parameter.
+            let param_tys = if method.receiver_modifier.is_some() {
+                let mut all = Vec::new();
+                if let Some(ref st) = self_ty {
+                    all.push(st.clone());
+                }
+                all.extend(explicit_params);
+                all
+            } else {
+                explicit_params
+            };
             let ret_ty = match &method.return_type {
                 Some(te) => lower_type_expr(te, symbols, resolutions),
                 None => Ty::Unit,

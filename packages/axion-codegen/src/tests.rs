@@ -630,3 +630,104 @@ fn main() -> i64
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 10);
 }
+
+#[test]
+fn compile_interface_basic() {
+    let src = "\
+interface Doubler
+    fn @[] double() -> i64
+
+struct Num
+    value: i64
+
+fn @[Num] double() -> i64
+    self.value * 2
+
+fn apply_double[T: Doubler](x: T) -> i64
+    x.double()
+
+fn main() -> i64
+    let n = Num #{value: 21}
+    apply_double[Num](n)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_clone_interface() {
+    let src = "\
+interface Clone
+    fn @[] clone() -> Self
+
+struct Point
+    x: i64
+    y: i64
+
+fn @[Point] clone() -> Point
+    Point #{x: self.x, y: self.y}
+
+fn dup[T: Clone](x: T) -> T
+    x.clone()
+
+fn main() -> i64
+    let p = Point #{x: 10, y: 20}
+    let p2 = dup[Point](p)
+    p2.x + p2.y
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn compile_interface_with_type_param() {
+    let src = "\
+interface Mapper[T]
+    fn @[] apply(x: T) -> T
+
+struct DoubleMapper
+    factor: i64
+
+fn @[DoubleMapper] apply(x: i64) -> i64
+    x * self.factor
+
+fn do_map[M: Mapper[i64]](mapper: M, val: i64) -> i64
+    mapper.apply(val)
+
+fn main() -> i64
+    let m = DoubleMapper #{factor: 3}
+    do_map[DoubleMapper](m, 14)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_multiple_interface_bounds() {
+    let src = "\
+interface Doubler
+    fn @[] double() -> i64
+
+interface Clone
+    fn @[] clone() -> Self
+
+struct Val
+    n: i64
+
+fn @[Val] double() -> i64
+    self.n * 2
+
+fn @[Val] clone() -> Val
+    Val #{n: self.n}
+
+fn clone_and_double[T: Clone + Doubler](x: T) -> i64
+    let y = x.clone()
+    y.double()
+
+fn main() -> i64
+    let v = Val #{n: 21}
+    clone_and_double[Val](v)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}

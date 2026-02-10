@@ -378,6 +378,72 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Interface method lookup for type parameters with bounds.
+        if let Ty::Param(param_def_id) = &resolved {
+            if let Some(bounds) = self.env.type_param_bounds.get(param_def_id).cloned() {
+                for iface_def_id in &bounds {
+                    if let Some(methods) = self.env.interface_methods.get(iface_def_id).cloned() {
+                        for (method_name, fn_ty) in &methods {
+                            if method_name == name {
+                                // Find interface's Self DefId for substitution.
+                                let iface_self_def_id = self.resolved.symbols.iter()
+                                    .find(|s| {
+                                        s.kind == SymbolKind::TypeParam
+                                            && s.name == "Self"
+                                            && {
+                                                let iface_sym = self.resolved.symbols.iter()
+                                                    .find(|is| is.def_id == *iface_def_id);
+                                                if let Some(is) = iface_sym {
+                                                    s.span.start >= is.span.start && s.span.end <= is.span.end
+                                                } else { false }
+                                            }
+                                    })
+                                    .map(|s| s.def_id);
+
+                                // Build substitution: interface Self → receiver Ty::Param.
+                                let mut subst_map = HashMap::new();
+                                if let Some(self_did) = iface_self_def_id {
+                                    subst_map.insert(self_did, resolved.clone());
+                                }
+
+                                // Substitute interface type params with bound type args.
+                                // e.g. for T: Iterator[i64], substitute Iterator's type param with i64.
+                                if let Some(bound_args) = self.env.interface_bound_type_args.get(&(*param_def_id, *iface_def_id)).cloned() {
+                                    let iface_sym = self.resolved.symbols.iter()
+                                        .find(|s| s.def_id == *iface_def_id);
+                                    if let Some(is) = iface_sym {
+                                        let iface_type_params: Vec<_> = self.resolved.symbols.iter()
+                                            .filter(|s| {
+                                                s.kind == SymbolKind::TypeParam
+                                                    && s.name != "Self"
+                                                    && s.span.start >= is.span.start
+                                                    && s.span.end <= is.span.end
+                                            })
+                                            .collect();
+                                        for (tp, arg) in iface_type_params.iter().zip(bound_args.iter()) {
+                                            subst_map.insert(tp.def_id, arg.clone());
+                                        }
+                                    }
+                                }
+
+                                // Substitute and strip self parameter.
+                                let substituted = substitute(fn_ty, &subst_map);
+                                if let Ty::Fn { params, ret } = &substituted {
+                                    if !params.is_empty() {
+                                        return Ty::Fn {
+                                            params: params[1..].to_vec(),
+                                            ret: ret.clone(),
+                                        };
+                                    }
+                                }
+                                return substituted;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Check for enum variant access: e.g. Shape.Circle
         if is_type_access {
             if let Ty::Enum { def_id, .. } = &resolved {

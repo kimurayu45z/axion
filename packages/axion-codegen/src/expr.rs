@@ -211,6 +211,7 @@ fn get_type_name_for_method_ctx<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> Option
                 .find(|s| s.def_id == *def_id)
                 .map(|s| s.name.clone())
         }
+        Ty::Prim(p) => Some(format!("{}", p)),
         _ => None,
     }
 }
@@ -563,7 +564,28 @@ fn compile_call<'ctx>(
     // Check for enum variant construction: Shape.Circle(5.0)
     // or method call: obj.method(args)
     if let ExprKind::Field { expr: inner, name: field_name } = &func.kind {
-        let inner_ty = get_expr_ty(ctx, inner);
+        // Resolve inner type via definition to avoid span collision with the Call/Field expr.
+        let inner_ty = if let ExprKind::Ident(_) = &inner.kind {
+            ctx.resolved
+                .resolutions
+                .get(&inner.span.start)
+                .and_then(|def_id| {
+                    // Try local_tys first (locals with substitution already applied),
+                    // then type_env.defs (function params).
+                    ctx.local_tys.get(def_id).cloned().or_else(|| {
+                        ctx.type_env.defs.get(def_id).map(|info| {
+                            if ctx.current_subst.is_empty() {
+                                info.ty.clone()
+                            } else {
+                                axion_mono::specialize::substitute(&info.ty, &ctx.current_subst)
+                            }
+                        })
+                    })
+                })
+                .unwrap_or_else(|| get_expr_ty(ctx, inner))
+        } else {
+            get_expr_ty(ctx, inner)
+        };
         if let Ty::Enum { def_id, .. } = &inner_ty {
             return compile_enum_data_variant(ctx, *def_id, func, args);
         }

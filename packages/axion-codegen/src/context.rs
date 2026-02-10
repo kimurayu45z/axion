@@ -26,6 +26,8 @@ pub struct CodegenCtx<'ctx> {
     pub locals: HashMap<DefId, PointerValue<'ctx>>,
     /// DefId → LLVM type of the stored value (to avoid span-based type lookup issues)
     pub local_types: HashMap<DefId, BasicTypeEnum<'ctx>>,
+    /// DefId → semantic Ty for local variables (after substitution).
+    pub local_tys: HashMap<DefId, Ty>,
     /// String literal cache: content → global pointer
     pub string_literals: HashMap<String, PointerValue<'ctx>>,
     /// Loop context for break/continue
@@ -67,6 +69,7 @@ impl<'ctx> CodegenCtx<'ctx> {
             functions: HashMap::new(),
             locals: HashMap::new(),
             local_types: HashMap::new(),
+            local_tys: HashMap::new(),
             string_literals: HashMap::new(),
             loop_exit_block: None,
             loop_header_block: None,

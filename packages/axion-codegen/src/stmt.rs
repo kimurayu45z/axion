@@ -65,13 +65,21 @@ fn compile_let<'ctx>(ctx: &mut CodegenCtx<'ctx>, stmt: &Stmt, name: &str, value:
         ctx.locals.insert(def_id, alloca);
         ctx.local_types.insert(def_id, val_ty);
 
-        // Check if the value's type has a `drop` method; if so, register for cleanup.
+        // Store the semantic Ty for this local (after substitution).
         let expr_ty = ctx
             .type_check
             .expr_types
             .get(&value.span.start)
             .cloned()
             .unwrap_or(Ty::Unit);
+        let semantic_ty = if ctx.current_subst.is_empty() {
+            expr_ty.clone()
+        } else {
+            axion_mono::specialize::substitute(&expr_ty, &ctx.current_subst)
+        };
+        ctx.local_tys.insert(def_id, semantic_ty);
+
+        // Check if the value's type has a `drop` method; if so, register for cleanup.
         register_drop_if_needed(ctx, alloca, val_ty, &expr_ty);
     }
 }
