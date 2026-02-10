@@ -920,6 +920,27 @@ fn main() -> i64
 }
 
 #[test]
+fn compile_generic_unwrap_or() {
+    let src = "\
+enum Option[T]
+    Some(value: T)
+    None
+
+fn unwrap_or[T](opt: Option[T], default: T) -> T
+    match opt
+        Option[T].Some(v) => v
+        Option[T].None => default
+
+fn main() -> i64
+    let x = Option[i64].Some(42)
+    let y = Option[i64].None
+    unwrap_or[i64](x, 0) + unwrap_or[i64](y, 10)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 52);
+}
+
+#[test]
 fn prelude_option_some_none() {
     let src = "\
 fn main() -> i64
@@ -987,4 +1008,88 @@ fn main() -> i64
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 5);
+}
+
+#[test]
+fn prelude_clamp() {
+    let src = "\
+fn main() -> i64
+    clamp(5, 0, 10) + clamp(0 - 3, 0, 10) + clamp(15, 0, 10)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn prelude_sign() {
+    let src = "\
+fn main() -> i64
+    sign(42) + sign(0) + sign(0 - 7) + 10
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn prelude_unwrap_or() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(42)
+    let y = Option[i64].None
+    unwrap_or[i64](x, 0) + unwrap_or[i64](y, 10)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 52);
+}
+
+#[test]
+fn prelude_map_option() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(21)
+    let doubled = map_option[i64, i64](x, |v: i64| v * 2)
+    unwrap_or[i64](doubled, 0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_result_unwrap_and_map() {
+    let src = "\
+fn main() -> i64
+    let ok = Result[i64, i64].Ok(20)
+    let err = Result[i64, i64].Err(99)
+    let a = unwrap_or_ok[i64, i64](ok, 0)
+    let b = unwrap_or_ok[i64, i64](err, 5)
+    let mapped = map_result[i64, i64, i64](Result[i64, i64].Ok(10), |v: i64| v + 7)
+    let c = unwrap_or_ok[i64, i64](mapped, 0)
+    a + b + c
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_is_some_is_none() {
+    let src = "\
+fn main() -> i64
+    let s = Option[i64].Some(1)
+    let n = Option[i64].None
+    is_some[i64](s) + is_none[i64](n) + is_some[i64](n) + is_none[i64](s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 2);
+}
+
+#[test]
+fn prelude_is_ok_is_err() {
+    let src = "\
+fn main() -> i64
+    let ok = Result[i64, i64].Ok(1)
+    let err = Result[i64, i64].Err(2)
+    is_ok[i64, i64](ok) + is_err[i64, i64](err) + is_ok[i64, i64](err) + is_err[i64, i64](ok)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 2);
 }
