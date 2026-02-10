@@ -216,6 +216,27 @@ fn get_type_name_for_method_ctx<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> Option
     }
 }
 
+/// Check if an expression refers to a type definition (for variant construction),
+/// not to a value/instance (for method calls).
+fn is_type_level_expr<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) => {
+            if let Some(&def_id) = ctx.resolved.resolutions.get(&expr.span.start) {
+                ctx.resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.def_id == def_id)
+                    .map(|s| matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        }
+        ExprKind::TypeApp { expr: inner, .. } => is_type_level_expr(ctx, inner),
+        _ => false,
+    }
+}
+
 fn get_expr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
     let ty = ctx
         .type_check
@@ -586,8 +607,13 @@ fn compile_call<'ctx>(
         } else {
             get_expr_ty(ctx, inner)
         };
-        if let Ty::Enum { def_id, .. } = &inner_ty {
-            return compile_enum_data_variant(ctx, *def_id, func, args);
+        // Enum variant construction only applies when the inner expr refers to the enum
+        // type itself (e.g., Option[i64].Some(10)), not to an instance (e.g., x.method()).
+        let is_type_access = is_type_level_expr(ctx, inner);
+        if is_type_access {
+            if let Ty::Enum { def_id, .. } = &inner_ty {
+                return compile_enum_data_variant(ctx, *def_id, func, args);
+            }
         }
         // Check for method call.
         if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
@@ -1904,7 +1930,25 @@ fn compile_match<'ctx>(
             ctx.context
                 .append_basic_block(fn_val, &format!("match_test_{}", i + 1))
         } else {
-            merge_bb
+            // For the last arm, if it has a conditional pattern (Constructor/Literal),
+            // the "no match" branch should go to an unreachable block, not merge_bb.
+            // This prevents merge_bb from having an unaccounted predecessor.
+            let is_conditional = matches!(
+                &arm.pattern.kind,
+                PatternKind::Constructor { .. } | PatternKind::Literal(_)
+            );
+            if is_conditional {
+                let cur_bb = ctx.builder.get_insert_block();
+                let unreach_bb = ctx.context.append_basic_block(fn_val, "match_unreachable");
+                ctx.builder.position_at_end(unreach_bb);
+                ctx.builder.build_unreachable().unwrap();
+                if let Some(bb) = cur_bb {
+                    ctx.builder.position_at_end(bb);
+                }
+                unreach_bb
+            } else {
+                merge_bb
+            }
         };
 
         // Test the pattern and bind variables.
@@ -1953,7 +1997,7 @@ fn compile_match<'ctx>(
                 }
                 ctx.builder.position_at_end(arm_bb);
             }
-            PatternKind::Constructor { path, fields } => {
+            PatternKind::Constructor { path, type_args: _, fields } => {
                 compile_match_constructor(
                     ctx,
                     &scrutinee_ty,

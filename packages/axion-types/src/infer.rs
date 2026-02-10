@@ -444,9 +444,9 @@ impl<'a> InferCtx<'a> {
             }
         }
 
-        // Check for enum variant access: e.g. Shape.Circle
+        // Check for enum variant access: e.g. Shape.Circle or Option[i64].Some
         if is_type_access {
-            if let Ty::Enum { def_id, .. } = &resolved {
+            if let Ty::Enum { def_id, type_args } = &resolved {
                 if let Some(variants) = self.env.enum_variants.get(def_id).cloned() {
                     if let Some((idx, (_, _, variant_fields))) = variants
                         .iter()
@@ -454,13 +454,40 @@ impl<'a> InferCtx<'a> {
                         .find(|(_, (vname, _, _))| vname == name)
                     {
                         self.field_resolutions.insert(span.start, idx);
+
+                        // Build substitution map from enum type params to type args.
+                        let subst = if !type_args.is_empty() {
+                            let parent_sym = self.resolved.symbols.iter().find(|s| s.def_id == *def_id);
+                            let param_ids: Vec<DefId> = if let Some(ps) = parent_sym {
+                                self.resolved.symbols.iter()
+                                    .filter(|s| {
+                                        s.kind == SymbolKind::TypeParam
+                                            && s.name != "Self"
+                                            && s.span.start >= ps.span.start
+                                            && s.span.end <= ps.span.end
+                                    })
+                                    .map(|s| s.def_id)
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+                            let mut m = HashMap::new();
+                            for (pid, arg) in param_ids.iter().zip(type_args.iter()) {
+                                m.insert(*pid, arg.clone());
+                            }
+                            m
+                        } else {
+                            HashMap::new()
+                        };
+
                         if variant_fields.is_empty() {
                             // Unit variant: return the enum type directly.
                             return resolved.clone();
                         } else {
-                            // Data variant: return a constructor Fn type.
-                            let param_tys: Vec<Ty> =
-                                variant_fields.iter().map(|(_, ty)| ty.clone()).collect();
+                            // Data variant: return a constructor Fn type with substituted params.
+                            let param_tys: Vec<Ty> = variant_fields.iter().map(|(_, ty)| {
+                                if subst.is_empty() { ty.clone() } else { substitute(ty, &subst) }
+                            }).collect();
                             return Ty::Fn {
                                 params: param_tys,
                                 ret: Box::new(resolved.clone()),
@@ -594,18 +621,22 @@ impl<'a> InferCtx<'a> {
 
     /// Check if an expression refers to a type definition (not an instance).
     fn is_type_expr(&self, expr: &Expr) -> bool {
-        if let ExprKind::Ident(_) = &expr.kind {
-            if let Some(&def_id) = self.resolved.resolutions.get(&expr.span.start) {
-                let sym = self.resolved.symbols.iter().find(|s| s.def_id == def_id);
-                if let Some(sym) = sym {
-                    return matches!(
-                        sym.kind,
-                        SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Interface
-                    );
+        match &expr.kind {
+            ExprKind::Ident(_) => {
+                if let Some(&def_id) = self.resolved.resolutions.get(&expr.span.start) {
+                    let sym = self.resolved.symbols.iter().find(|s| s.def_id == def_id);
+                    if let Some(sym) = sym {
+                        return matches!(
+                            sym.kind,
+                            SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Interface
+                        );
+                    }
                 }
+                false
             }
+            ExprKind::TypeApp { expr: inner, .. } => self.is_type_expr(inner),
+            _ => false,
         }
-        false
     }
 
     /// Resolve a DefId that might be `Self` (TypeParam with parent) to the actual struct DefId.
@@ -1028,6 +1059,14 @@ impl<'a> InferCtx<'a> {
                 // If we can't find type params, just return the original fn type.
                 resolved_base
             }
+            Ty::Enum { def_id, .. } => Ty::Enum {
+                def_id: *def_id,
+                type_args: ty_args,
+            },
+            Ty::Struct { def_id, .. } => Ty::Struct {
+                def_id: *def_id,
+                type_args: ty_args,
+            },
             Ty::Error => Ty::Error,
             _ => resolved_base,
         }
@@ -1229,7 +1268,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
             PatternKind::Wildcard => {}
-            PatternKind::Constructor { path, fields } => {
+            PatternKind::Constructor { path, type_args: _, fields } => {
                 self.infer_constructor_pattern(path, fields, &resolved_ty, pattern.span);
             }
             PatternKind::Struct { name, fields, .. } => {
@@ -1312,10 +1351,14 @@ impl<'a> InferCtx<'a> {
         };
 
         if let Some(enum_def_id) = enum_def_id {
-            // Unify scrutinee with the enum type.
+            // Unify scrutinee with the enum type (preserve type args from scrutinee).
+            let scrutinee_type_args = match scrutinee_ty {
+                Ty::Enum { type_args, .. } => type_args.clone(),
+                _ => vec![],
+            };
             let enum_ty = Ty::Enum {
                 def_id: enum_def_id,
-                type_args: vec![],
+                type_args: scrutinee_type_args.clone(),
             };
             if self.unify.unify(scrutinee_ty, &enum_ty).is_err() {
                 self.diagnostics.push(errors::pattern_mismatch(
@@ -1327,14 +1370,44 @@ impl<'a> InferCtx<'a> {
                 return;
             }
 
+            // Build substitution map from enum type params to concrete type args.
+            let subst = if !scrutinee_type_args.is_empty() {
+                let parent_sym = self.resolved.symbols.iter().find(|s| s.def_id == enum_def_id);
+                let param_ids: Vec<DefId> = if let Some(ps) = parent_sym {
+                    self.resolved.symbols.iter()
+                        .filter(|s| {
+                            s.kind == SymbolKind::TypeParam
+                                && s.name != "Self"
+                                && s.span.start >= ps.span.start
+                                && s.span.end <= ps.span.end
+                        })
+                        .map(|s| s.def_id)
+                        .collect()
+                } else {
+                    vec![]
+                };
+                let mut m = HashMap::new();
+                for (pid, arg) in param_ids.iter().zip(scrutinee_type_args.iter()) {
+                    m.insert(*pid, arg.clone());
+                }
+                m
+            } else {
+                HashMap::new()
+            };
+
             // Look up variant fields.
             if let Some(variants) = self.env.enum_variants.get(&enum_def_id).cloned() {
                 if let Some((_, _, variant_fields)) =
                     variants.iter().find(|(name, _, _)| name == variant_name)
                 {
-                    // Distribute field types to sub-patterns.
+                    // Distribute field types to sub-patterns (with substitution).
                     for (pat, (_field_name, field_ty)) in fields.iter().zip(variant_fields.iter()) {
-                        self.infer_pattern_bindings(pat, field_ty);
+                        let resolved_field_ty = if subst.is_empty() {
+                            field_ty.clone()
+                        } else {
+                            substitute(field_ty, &subst)
+                        };
+                        self.infer_pattern_bindings(pat, &resolved_field_ty);
                     }
                 } else {
                     self.diagnostics.push(errors::pattern_mismatch(

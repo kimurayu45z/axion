@@ -1820,6 +1820,18 @@ impl Parser {
             return None;
         }
 
+        // Optional type arguments: `[T1, T2, ...]`
+        let mut type_args = Vec::new();
+        if self.check(&TokenKind::LBracket) {
+            self.advance();
+            type_args.push(self.parse_type_expr()?);
+            while self.check(&TokenKind::Comma) {
+                self.advance();
+                type_args.push(self.parse_type_expr()?);
+            }
+            self.expect(&TokenKind::RBracket)?;
+        }
+
         // Additional path segments: `.Variant`
         while self.check(&TokenKind::Dot) {
             self.advance();
@@ -1905,7 +1917,7 @@ impl Parser {
         }
 
         Some(Pattern {
-            kind: PatternKind::Constructor { path, fields },
+            kind: PatternKind::Constructor { path, type_args, fields },
             span: span.merge(self.prev_span()),
         })
     }
@@ -3080,15 +3092,17 @@ mod tests {
                         ExprKind::Match { arms, .. } => {
                             assert_eq!(arms.len(), 2);
                             match &arms[0].pattern.kind {
-                                PatternKind::Constructor { path, fields } => {
+                                PatternKind::Constructor { path, type_args, fields } => {
                                     assert_eq!(path, &["Shape", "Circle"]);
+                                    assert!(type_args.is_empty());
                                     assert_eq!(fields.len(), 1);
                                 }
                                 other => panic!("expected constructor pattern, got {:?}", other),
                             }
                             match &arms[1].pattern.kind {
-                                PatternKind::Constructor { path, fields } => {
+                                PatternKind::Constructor { path, type_args, fields } => {
                                     assert_eq!(path, &["Shape", "Point"]);
+                                    assert!(type_args.is_empty());
                                     assert_eq!(fields.len(), 0);
                                 }
                                 other => panic!("expected constructor pattern, got {:?}", other),

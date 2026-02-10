@@ -602,9 +602,10 @@ pub enum PatternKind {
     Literal(Box<Expr>),
     /// Tuple pattern: `{a, b}`
     TuplePattern(Vec<Pattern>),
-    /// Constructor: `Shape.Circle(r)`
+    /// Constructor: `Shape.Circle(r)` or `Option[i64].Some(v)`
     Constructor {
         path: Vec<String>,
+        type_args: Vec<TypeExpr>,
         fields: Vec<Pattern>,
     },
     /// OR pattern: `A | B`

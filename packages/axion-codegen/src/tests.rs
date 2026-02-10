@@ -731,3 +731,118 @@ fn main() -> i64
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
 }
+
+#[test]
+fn compile_option_match_with_type_args() {
+    let src = "\
+enum Option[T]
+    Some(value: T)
+    None
+
+fn unwrap_or(opt: Option[i64], default: i64) -> i64
+    match opt
+        Option[i64].Some(v) => v
+        Option[i64].None => default
+
+fn main() -> i64
+    let x = Option[i64].Some(42)
+    unwrap_or(x, 0)
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_option_method_is_some() {
+    let src = "\
+enum Option[T]
+    Some(value: T)
+    None
+
+fn @[Option[i64]] is_some() -> i64
+    match self
+        Option[i64].Some(_) => 1
+        Option[i64].None => 0
+
+fn main() -> i64
+    let x = Option[i64].Some(10)
+    let y = Option[i64].None
+    x.is_some() + y.is_some()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_option_map() {
+    let src = "\
+enum Option[T]
+    Some(value: T)
+    None
+
+fn option_map(opt: Option[i64], f: Fn(i64) -> i64) -> Option[i64]
+    match opt
+        Option[i64].Some(v) => Option[i64].Some(f(v))
+        Option[i64].None => Option[i64].None
+
+fn main() -> i64
+    let x = Option[i64].Some(21)
+    let doubled = option_map(x, |v| v * 2)
+    match doubled
+        Option[i64].Some(v) => v
+        Option[i64].None => 0
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_result_basic() {
+    let src = "\
+enum Result[T, E]
+    Ok(value: T)
+    Err(error: E)
+
+fn safe_div(a: i64, b: i64) -> Result[i64, i64]
+    if b == 0
+        Result[i64, i64].Err(0)
+    else
+        Result[i64, i64].Ok(a / b)
+
+fn main() -> i64
+    let r = safe_div(84, 2)
+    match r
+        Result[i64, i64].Ok(v) => v
+        Result[i64, i64].Err(_) => 0
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_iterator_with_option_match() {
+    let src = "\
+enum Option[T]
+    Some(value: T)
+    None
+
+fn unwrap_or_default(opt: Option[i64]) -> i64
+    match opt
+        Option[i64].Some(v) => v
+        Option[i64].None => 0
+
+fn make_opt(i: i64) -> Option[i64]
+    if i > 0
+        Option[i64].Some(i)
+    else
+        Option[i64].None
+
+fn main() -> i64
+    let a = unwrap_or_default(make_opt(10))
+    let b = unwrap_or_default(make_opt(0))
+    let c = unwrap_or_default(make_opt(32))
+    a + b + c
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}

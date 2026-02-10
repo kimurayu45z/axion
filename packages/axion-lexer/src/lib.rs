@@ -186,6 +186,10 @@ impl<'src> Lexer<'src> {
         let b = self.peek()?;
         match b {
             // Comments
+            b'/' if self.peek_at(1) != Some(b'/') => {
+                self.advance();
+                Some(Token { kind: TokenKind::Slash, span: Span::new(start as u32, self.pos as u32) })
+            }
             b'/' if self.peek_at(1) == Some(b'/') => {
                 self.advance(); // /
                 self.advance(); // /

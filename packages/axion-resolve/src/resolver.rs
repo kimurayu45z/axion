@@ -760,7 +760,7 @@ fn bind_pattern(ctx: &mut ResolveContext, pat: &Pattern, scope: ScopeId) {
             }
         }
 
-        PatternKind::Constructor { path, fields } => {
+        PatternKind::Constructor { path, type_args: _, fields } => {
             // path[0] is the enum name, path[1] is the variant name.
             if path.len() >= 2 {
                 let enum_name = &path[0];

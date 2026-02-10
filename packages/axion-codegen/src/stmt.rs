@@ -200,7 +200,7 @@ pub fn bind_pattern_value<'ctx>(
                 }
             }
         }
-        PatternKind::Constructor { path, fields } => {
+        PatternKind::Constructor { path, type_args: _, fields } => {
             if path.len() < 2 || fields.is_empty() {
                 return;
             }
