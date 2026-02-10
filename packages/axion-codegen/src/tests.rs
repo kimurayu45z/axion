@@ -846,3 +846,66 @@ fn main() -> i64
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
 }
+
+#[test]
+fn compile_mut_self_field_assign() {
+    let src = "\
+struct Counter
+    mut value: i64
+
+fn@[mut Counter] increment()
+    self.value = self.value + 1
+
+fn main() -> i64
+    let mut c = Counter #{value: 40}
+    c.increment()
+    c.increment()
+    c.value
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_mut_self_iterator() {
+    let src = "\
+struct Range
+    mut current: i64
+    end: i64
+
+fn@[mut Range] next() -> i64
+    let val = self.current
+    self.current = self.current + 1
+    val
+
+fn main() -> i64
+    let mut r = Range #{current: 0, end: 5}
+    let mut sum: i64 = 0
+    sum = sum + r.next()
+    sum = sum + r.next()
+    sum = sum + r.next()
+    sum = sum + r.next()
+    sum = sum + r.next()
+    sum
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);  // 0+1+2+3+4 = 10
+}
+
+#[test]
+fn compile_borrow_self_method() {
+    let src = "\
+struct Point
+    x: i64
+    y: i64
+
+fn@[Point] sum() -> i64
+    self.x + self.y
+
+fn main() -> i64
+    let p = Point #{x: 20, y: 22}
+    p.sum()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}

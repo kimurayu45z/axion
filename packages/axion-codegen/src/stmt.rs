@@ -4,7 +4,7 @@ use axion_syntax::*;
 use inkwell::values::BasicValueEnum;
 
 use crate::context::CodegenCtx;
-use crate::expr::compile_expr;
+use crate::expr::{compile_expr, compile_expr_addr, get_obj_llvm_ty};
 use crate::function::emit_cleanup;
 use crate::layout::{ty_to_llvm, build_subst_map, variant_struct_type};
 
@@ -120,15 +120,32 @@ fn register_drop_if_needed<'ctx>(
 fn compile_assign<'ctx>(ctx: &mut CodegenCtx<'ctx>, target: &Expr, value: &Expr) {
     let val = compile_expr(ctx, value);
 
-    // The target should be an identifier we can resolve.
-    if let ExprKind::Ident(_) = &target.kind {
-        if let Some(def_id) = ctx.resolved.resolutions.get(&target.span.start) {
-            if let Some(&alloca) = ctx.locals.get(def_id) {
-                if let Some(val) = val {
-                    ctx.builder.build_store(alloca, val).unwrap();
+    match &target.kind {
+        ExprKind::Ident(_) => {
+            if let Some(def_id) = ctx.resolved.resolutions.get(&target.span.start) {
+                if let Some(&alloca) = ctx.locals.get(def_id) {
+                    if let Some(val) = val {
+                        ctx.builder.build_store(alloca, val).unwrap();
+                    }
                 }
             }
         }
+        ExprKind::Field { expr: obj, name: _ } => {
+            // Field assignment: obj.field = value
+            if let Some(val) = val {
+                if let Some(obj_ptr) = compile_expr_addr(ctx, obj) {
+                    if let Some(&field_idx) = ctx.type_check.field_resolutions.get(&target.span.start) {
+                        let llvm_ty = get_obj_llvm_ty(ctx, obj);
+                        let gep = ctx
+                            .builder
+                            .build_struct_gep(llvm_ty, obj_ptr, field_idx as u32, "field_assign")
+                            .unwrap();
+                        ctx.builder.build_store(gep, val).unwrap();
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 

@@ -2,6 +2,7 @@ use axion_resolve::def_id::SymbolKind;
 use axion_syntax::*;
 use axion_types::ty::Ty;
 use inkwell::types::BasicType;
+use inkwell::AddressSpace;
 
 use crate::context::CodegenCtx;
 use crate::expr::compile_expr;
@@ -12,13 +13,27 @@ use crate::stmt::compile_stmt;
 pub fn emit_cleanup<'ctx>(ctx: &CodegenCtx<'ctx>) {
     // Call drop methods in reverse order (LIFO).
     for (alloca, llvm_ty, drop_fn) in ctx.drop_locals.iter().rev() {
-        let val = ctx
-            .builder
-            .build_load(*llvm_ty, *alloca, "drop_val")
-            .unwrap();
-        ctx.builder
-            .build_call(*drop_fn, &[val.into()], "")
-            .unwrap();
+        // Check if the drop method expects a pointer (pass-by-reference) or a value.
+        let first_param_is_ptr = drop_fn
+            .get_type()
+            .get_param_types()
+            .first()
+            .map(|t| t.is_pointer_type())
+            .unwrap_or(false);
+        if first_param_is_ptr {
+            // Pass the alloca pointer directly.
+            ctx.builder
+                .build_call(*drop_fn, &[(*alloca).into()], "")
+                .unwrap();
+        } else {
+            let val = ctx
+                .builder
+                .build_load(*llvm_ty, *alloca, "drop_val")
+                .unwrap();
+            ctx.builder
+                .build_call(*drop_fn, &[val.into()], "")
+                .unwrap();
+        }
     }
 
     // Free heap allocations.
@@ -203,7 +218,14 @@ fn declare_method<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Sp
 
     let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
         .iter()
-        .map(|t| ty_to_llvm_metadata(ctx, t))
+        .enumerate()
+        .map(|(i, t)| {
+            if i == 0 && matches!(m.receiver_modifier, ReceiverModifier::Mut | ReceiverModifier::Borrow) {
+                ctx.context.ptr_type(AddressSpace::default()).into()
+            } else {
+                ty_to_llvm_metadata(ctx, t)
+            }
+        })
         .collect();
 
     let fn_type = if is_void_ty(ret) {
@@ -269,11 +291,24 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
             ctx.resolved.symbols.iter().find(|s| s.def_id == did)
         });
         if let Some(sym) = self_sym {
-            let val_ty = self_val.get_type();
-            let alloca = ctx.builder.build_alloca(val_ty, "self").unwrap();
-            ctx.builder.build_store(alloca, self_val).unwrap();
-            ctx.locals.insert(sym.def_id, alloca);
-            ctx.local_types.insert(sym.def_id, val_ty);
+            if matches!(m.receiver_modifier, ReceiverModifier::Mut | ReceiverModifier::Borrow) {
+                // self_val is already a pointer to caller's struct — use directly.
+                let ptr = self_val.into_pointer_value();
+                let fn_ty = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+                let pointee_ty = match fn_ty {
+                    Some(Ty::Fn { params, .. }) if !params.is_empty() => ty_to_llvm(ctx, &params[0]),
+                    _ => ctx.context.i64_type().into(),
+                };
+                ctx.locals.insert(sym.def_id, ptr);
+                ctx.local_types.insert(sym.def_id, pointee_ty);
+            } else {
+                // Move: pass by value (current behavior).
+                let val_ty = self_val.get_type();
+                let alloca = ctx.builder.build_alloca(val_ty, "self").unwrap();
+                ctx.builder.build_store(alloca, self_val).unwrap();
+                ctx.locals.insert(sym.def_id, alloca);
+                ctx.local_types.insert(sym.def_id, val_ty);
+            }
         }
     }
 

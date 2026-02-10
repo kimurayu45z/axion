@@ -2,7 +2,7 @@ use axion_resolve::def_id::{DefId, SymbolKind};
 use axion_types::ty::{PrimTy, Ty};
 use axion_syntax::*;
 use inkwell::types::BasicType;
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue};
 use inkwell::IntPredicate;
 use inkwell::FloatPredicate;
 use inkwell::AddressSpace;
@@ -76,6 +76,63 @@ pub fn compile_expr<'ctx>(
         ExprKind::MapLit(_) | ExprKind::SetLit(_) => None,
         ExprKind::Handle { .. } | ExprKind::Try(_) | ExprKind::Await(_) => None,
     }
+}
+
+/// Get the address (pointer) of an expression, for pass-by-reference.
+pub fn compile_expr_addr<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    expr: &Expr,
+) -> Option<PointerValue<'ctx>> {
+    match &expr.kind {
+        ExprKind::Ident(_) => {
+            let def_id = ctx.resolved.resolutions.get(&expr.span.start)?;
+            ctx.locals.get(def_id).copied()
+        }
+        ExprKind::Field { expr: obj, name: _ } => {
+            // GEP into struct field.
+            let obj_ptr = compile_expr_addr(ctx, obj)?;
+            let field_idx = ctx.type_check.field_resolutions.get(&expr.span.start)?;
+            let llvm_ty = get_obj_llvm_ty(ctx, obj);
+            let gep = ctx
+                .builder
+                .build_struct_gep(llvm_ty, obj_ptr, *field_idx as u32, "field_addr")
+                .ok()?;
+            Some(gep)
+        }
+        _ => {
+            // Fallback: compile to value, store in temp alloca.
+            let val = compile_expr(ctx, expr)?;
+            let alloca = ctx
+                .builder
+                .build_alloca(val.get_type(), "tmp_ref")
+                .unwrap();
+            ctx.builder.build_store(alloca, val).unwrap();
+            Some(alloca)
+        }
+    }
+}
+
+/// Get the LLVM type for an object expression, resolving via DefId when possible
+/// to avoid span collisions in expr_types.
+pub fn get_obj_llvm_ty<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    obj: &Expr,
+) -> inkwell::types::BasicTypeEnum<'ctx> {
+    // For identifiers, resolve through DefId to avoid span collision.
+    if let ExprKind::Ident(_) = &obj.kind {
+        if let Some(&def_id) = ctx.resolved.resolutions.get(&obj.span.start) {
+            // Use local_types if available (already the correct LLVM type).
+            if let Some(&llvm_ty) = ctx.local_types.get(&def_id) {
+                return llvm_ty;
+            }
+            // Otherwise resolve through type_env.
+            if let Some(info) = ctx.type_env.defs.get(&def_id) {
+                return ty_to_llvm(ctx, &info.ty);
+            }
+        }
+    }
+    // Fallback to get_expr_ty.
+    ty_to_llvm(ctx, &get_expr_ty(ctx, obj))
 }
 
 fn compile_int_lit<'ctx>(
@@ -237,7 +294,7 @@ fn is_type_level_expr<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> bool {
     }
 }
 
-fn get_expr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
+pub fn get_expr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
     let ty = ctx
         .type_check
         .expr_types
@@ -628,7 +685,14 @@ fn compile_call<'ctx>(
                 if let Some(&fn_value) = ctx.functions.get(&def_id) {
                     // Compile receiver (self) as first arg.
                     let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
-                    if let Some(receiver) = compile_expr(ctx, inner) {
+                    // Check if receiver should be passed by reference.
+                    let recv_mod = ctx.type_env.receiver_modifiers.get(&def_id).cloned();
+                    let pass_by_ref = matches!(recv_mod, Some(ReceiverModifier::Mut) | Some(ReceiverModifier::Borrow));
+                    if pass_by_ref {
+                        if let Some(ptr) = compile_expr_addr(ctx, inner) {
+                            compiled_args.push(ptr.into());
+                        }
+                    } else if let Some(receiver) = compile_expr(ctx, inner) {
                         compiled_args.push(receiver.into());
                     }
                     for arg in args {
