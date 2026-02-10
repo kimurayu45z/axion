@@ -73,23 +73,32 @@ fn cmd_check(args: &[String]) {
         }
     };
 
-    let (ast, mut diagnostics) = parse(&source, file_path);
+    let (combined_source, prelude_lines) = axion_resolve::prelude::with_prelude(&source);
+
+    let (ast, mut diagnostics) = parse(&combined_source, file_path);
 
     // Name resolution pass.
-    let (resolved, resolve_diags) = axion_resolve::resolve_single(&ast, file_path, &source);
+    let (resolved, resolve_diags) = axion_resolve::resolve_single(&ast, file_path, &combined_source);
     diagnostics.extend(resolve_diags);
 
     // Type checking pass.
-    let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
+    let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &combined_source);
     diagnostics.extend(type_diags);
 
     // Borrow checking pass.
     let mut unify_check = axion_types::unify::UnifyContext::new();
     let type_env_check = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify_check);
     let borrow_diags = axion_borrow::borrow_check(
-        &ast, &resolved, &type_out, &type_env_check, file_path, &source,
+        &ast, &resolved, &type_out, &type_env_check, file_path, &combined_source,
     );
     diagnostics.extend(borrow_diags);
+
+    // Filter out diagnostics from the prelude and adjust line numbers.
+    let prelude_lines_u32 = prelude_lines as u32;
+    diagnostics.retain(|d| d.primary_span.line > prelude_lines_u32);
+    for diag in &mut diagnostics {
+        diag.primary_span.line -= prelude_lines_u32;
+    }
 
     if json_output {
         let output = DiagnosticOutput::new(diagnostics);
@@ -175,19 +184,28 @@ fn cmd_build(args: &[String]) {
         }
     };
 
-    let (ast, mut diagnostics) = parse(&source, file_path);
-    let (resolved, resolve_diags) = axion_resolve::resolve_single(&ast, file_path, &source);
+    let (combined_source, prelude_lines) = axion_resolve::prelude::with_prelude(&source);
+
+    let (ast, mut diagnostics) = parse(&combined_source, file_path);
+    let (resolved, resolve_diags) = axion_resolve::resolve_single(&ast, file_path, &combined_source);
     diagnostics.extend(resolve_diags);
-    let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &source);
+    let (type_out, type_diags) = axion_types::type_check(&ast, &resolved, file_path, &combined_source);
     diagnostics.extend(type_diags);
 
     // Borrow checking pass (before codegen).
     let mut unify_borrow = axion_types::unify::UnifyContext::new();
     let type_env_borrow = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify_borrow);
     let borrow_diags = axion_borrow::borrow_check(
-        &ast, &resolved, &type_out, &type_env_borrow, file_path, &source,
+        &ast, &resolved, &type_out, &type_env_borrow, file_path, &combined_source,
     );
     diagnostics.extend(borrow_diags);
+
+    // Filter out diagnostics from the prelude and adjust line numbers.
+    let prelude_lines_u32 = prelude_lines as u32;
+    diagnostics.retain(|d| d.primary_span.line > prelude_lines_u32);
+    for diag in &mut diagnostics {
+        diag.primary_span.line -= prelude_lines_u32;
+    }
 
     let has_errors = diagnostics
         .iter()

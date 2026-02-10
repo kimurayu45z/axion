@@ -5,6 +5,7 @@ pub mod collector;
 pub mod resolver;
 pub mod builtins;
 pub mod errors;
+pub mod prelude;
 
 use std::collections::HashMap;
 

@@ -16,7 +16,7 @@ struct RunResult {
     stdout: String,
 }
 
-fn compile_and_run(src: &str) -> RunResult {
+fn compile_and_run_raw(src: &str) -> RunResult {
     let (sf, parse_diags) = axion_parser::parse(src, "test.ax");
     assert!(parse_diags.is_empty(), "Parse errors: {:?}", parse_diags);
 
@@ -65,6 +65,15 @@ fn compile_and_run(src: &str) -> RunResult {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
     RunResult { exit_code, stdout }
+}
+
+fn compile_and_run(src: &str) -> RunResult {
+    compile_and_run_raw(src)
+}
+
+fn compile_and_run_with_prelude(src: &str) -> RunResult {
+    let (combined, _) = axion_resolve::prelude::with_prelude(src);
+    compile_and_run_raw(&combined)
 }
 
 #[allow(dead_code)]
@@ -908,4 +917,74 @@ fn main() -> i64
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_option_some_none() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(42)
+    let y = Option[i64].None
+    match x
+        Option[i64].Some(v) => match y
+            Option[i64].Some(_) => 0
+            Option[i64].None => v
+        Option[i64].None => 0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_result_ok_err() {
+    let src = "\
+fn main() -> i64
+    let ok = Result[i64, i64].Ok(10)
+    let err = Result[i64, i64].Err(99)
+    let a = match ok
+        Result[i64, i64].Ok(v) => v
+        Result[i64, i64].Err(_) => 0
+    let b = match err
+        Result[i64, i64].Ok(_) => 0
+        Result[i64, i64].Err(e) => e
+    a + b
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 109);
+}
+
+#[test]
+fn prelude_abs() {
+    let src = "\
+fn main() -> i64
+    abs(0 - 42)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_min_max() {
+    let src = "\
+fn main() -> i64
+    min(10, 20) + max(10, 20)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn prelude_combined() {
+    let src = "\
+fn main() -> i64
+    let a = abs(0 - 5)
+    let b = min(a, 10)
+    let c = max(b, 3)
+    let opt = Option[i64].Some(c)
+    match opt
+        Option[i64].Some(v) => v
+        Option[i64].None => 0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
 }

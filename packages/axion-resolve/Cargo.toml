@@ -6,6 +6,6 @@ edition.workspace = true
 [dependencies]
 axion-syntax = { path = "../axion-syntax" }
 axion-diagnostics = { path = "../axion-diagnostics" }
+axion-parser = { path = "../axion-parser" }
 
 [dev-dependencies]
-axion-parser = { path = "../axion-parser" }
