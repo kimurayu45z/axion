@@ -1052,3 +1052,20 @@ impl SInt for Foo
     assert!(diags.iter().any(|d| d.code == "E0209"),
         "expected E0209 (unsatisfied_bound), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
 }
+
+// ===== FixedArray built-in method tests =====
+
+#[test]
+fn array_builtin_len() {
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    arr.len()");
+}
+
+#[test]
+fn array_builtin_first() {
+    check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    arr.first()");
+}
+
+#[test]
+fn array_builtin_last() {
+    check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    arr.last()");
+}

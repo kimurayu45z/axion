@@ -352,6 +352,31 @@ impl<'a> InferCtx<'a> {
         let inner_ty = self.infer_expr(inner);
         let resolved = self.unify.resolve(&inner_ty);
 
+        // FixedArray built-in methods
+        if let Ty::Array { ref elem, len: _ } = resolved {
+            match name {
+                "len" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(Ty::Prim(PrimTy::I64)),
+                    };
+                }
+                "first" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(*elem.clone()),
+                    };
+                }
+                "last" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(*elem.clone()),
+                    };
+                }
+                _ => {}
+            }
+        }
+
         // Check if the inner expression resolves to a type definition (for constructor calls)
         // vs. an instance (for method calls).
         let is_type_access = self.is_type_expr(inner);

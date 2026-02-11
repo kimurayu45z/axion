@@ -1272,3 +1272,33 @@ fn main() -> i64
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 42);
 }
+
+// ===== FixedArray built-in method tests =====
+
+#[test]
+fn array_builtin_len() {
+    let src = "fn main() -> i64\n    let arr = [1, 2, 3]\n    arr.len()";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 3);
+}
+
+#[test]
+fn array_builtin_first() {
+    let src = "fn main() -> i64\n    let arr = [10, 20, 30]\n    arr.first()";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn array_builtin_last() {
+    let src = "fn main() -> i64\n    let arr = [10, 20, 30]\n    arr.last()";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn array_len_in_expression() {
+    let src = "fn main() -> i64\n    let arr = [1, 2, 3]\n    arr.len() + 7";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}

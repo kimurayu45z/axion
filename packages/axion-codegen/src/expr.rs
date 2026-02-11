@@ -677,6 +677,37 @@ fn compile_call<'ctx>(
                 return compile_enum_data_variant(ctx, *def_id, func, args);
             }
         }
+        // FixedArray built-in method calls
+        if let Ty::Array { elem: _, len } = inner_ty {
+            match field_name.as_str() {
+                "len" => {
+                    let len_val = ctx.context.i64_type().const_int(len, false);
+                    return Some(len_val.into());
+                }
+                "first" => {
+                    let arr_val = compile_expr(ctx, inner)?;
+                    let extracted = ctx
+                        .builder
+                        .build_extract_value(arr_val.into_array_value(), 0, "first")
+                        .unwrap();
+                    return Some(extracted);
+                }
+                "last" => {
+                    let arr_val = compile_expr(ctx, inner)?;
+                    let extracted = ctx
+                        .builder
+                        .build_extract_value(
+                            arr_val.into_array_value(),
+                            (len - 1) as u32,
+                            "last",
+                        )
+                        .unwrap();
+                    return Some(extracted);
+                }
+                _ => {}
+            }
+        }
+
         // Check for method call.
         if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
             let method_key = format!("{}.{}", type_name, field_name);
