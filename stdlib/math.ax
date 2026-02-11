@@ -1,4 +1,4 @@
-fn abs(x: i64) -> i64
+fn abs[T: SInt](x: T) -> T
     if x < 0
         0 - x
     else
@@ -25,7 +25,7 @@ fn clamp[T: Number](x: T, lo: T, hi: T) -> T
         else
             x
 
-fn sign(x: i64) -> i64
+fn sign[T: SInt](x: T) -> T
     if x > 0
         1
     else
@@ -34,37 +34,37 @@ fn sign(x: i64) -> i64
         else
             0
 
-fn pow(base: i64, exp: i64) -> i64
-    let mut result: i64 = 1
-    let mut i: i64 = 0
+fn pow[T: Int](base: T, exp: T) -> T
+    let mut result = 1
+    let mut i = 0
     while i < exp
         result = result * base
         i = i + 1
     result
 
-fn gcd(a: i64, b: i64) -> i64
-    let mut x = abs(a)
-    let mut y = abs(b)
+fn gcd[T: SInt](a: T, b: T) -> T
+    let mut x = abs[T](a)
+    let mut y = abs[T](b)
     while y > 0
         let t = y
         y = x % t
         x = t
     x
 
-fn lcm(a: i64, b: i64) -> i64
-    let g = gcd(a, b)
+fn lcm[T: SInt](a: T, b: T) -> T
+    let g = gcd[T](a, b)
     if g == 0
         0
     else
-        abs(a) / g * abs(b)
+        abs[T](a) / g * abs[T](b)
 
-fn is_even(x: i64) -> bool
+fn is_even[T: Int](x: T) -> bool
     if x % 2 == 0
         true
     else
         false
 
-fn is_odd(x: i64) -> bool
+fn is_odd[T: Int](x: T) -> bool
     if x % 2 == 0
         false
     else

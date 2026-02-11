@@ -989,7 +989,7 @@ fn main() -> i64
 fn prelude_abs() {
     let src = "\
 fn main() -> i64
-    abs(0 - 42)
+    abs[i64](0 - 42)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 42);
@@ -1009,7 +1009,7 @@ fn main() -> i64
 fn prelude_combined() {
     let src = "\
 fn main() -> i64
-    let a = abs(0 - 5)
+    let a = abs[i64](0 - 5)
     let b = min[i64](a, 10)
     let c = max[i64](b, 3)
     let opt = Option[i64].Some(c)
@@ -1033,7 +1033,7 @@ fn main() -> i64
 fn prelude_sign() {
     let src = "\
 fn main() -> i64
-    sign(42) + sign(0) + sign(0 - 7) + 10
+    sign[i64](42) + sign[i64](0) + sign[i64](0 - 7) + 10
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 10);
@@ -1131,7 +1131,7 @@ fn main() -> i64
 fn prelude_pow() {
     let src = "\
 fn main() -> i64
-    pow(2, 6)
+    pow[i64](2, 6)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 64);
@@ -1141,7 +1141,7 @@ fn main() -> i64
 fn prelude_gcd_lcm() {
     let src = "\
 fn main() -> i64
-    gcd(12, 8) + lcm(3, 4)
+    gcd[i64](12, 8) + lcm[i64](3, 4)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 16);
@@ -1151,10 +1151,10 @@ fn main() -> i64
 fn prelude_is_even_is_odd() {
     let src = "\
 fn main() -> i64
-    if is_even(4) == true
-        if is_odd(3) == true
-            if is_even(3) == false
-                if is_odd(4) == false
+    if is_even[i64](4) == true
+        if is_odd[i64](3) == true
+            if is_even[i64](3) == false
+                if is_odd[i64](4) == false
                     42
                 else
                     1
@@ -1167,6 +1167,26 @@ fn main() -> i64
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_generic_pow() {
+    let src = "\
+fn main() -> i64
+    pow[i64](3, 4)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 81);
+}
+
+#[test]
+fn prelude_generic_abs_sign() {
+    let src = "\
+fn main() -> i64
+    abs[i64](0 - 5) + sign[i64](0 - 3) + 10
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 14);
 }
 
 #[test]

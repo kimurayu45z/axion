@@ -104,6 +104,7 @@ pub fn type_check_with_imports(
                     self_ty: None,
                     current_effects,
                     handled_effects: Vec::new(),
+                    int_lit_vars: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&f.body);
 
@@ -111,15 +112,18 @@ pub fn type_check_with_imports(
                 if f.return_type.is_some() {
                     let expected_ret = ctx.current_return_ty.clone();
                     if ctx.unify.unify(&expected_ret, &body_ty).is_err() {
-                        diagnostics.push(errors::return_type_mismatch(
-                            &unify.resolve(&expected_ret),
-                            &unify.resolve(&body_ty),
+                        ctx.diagnostics.push(errors::return_type_mismatch(
+                            &ctx.unify.resolve(&expected_ret),
+                            &ctx.unify.resolve(&body_ty),
                             file_name,
                             item.span,
                             source,
                         ));
                     }
                 }
+
+                // Default remaining unresolved int literal Infer vars to i64.
+                ctx.default_int_lits();
             }
             ItemKind::Method(m) => {
                 let ret_ty = match &m.return_type {
@@ -167,21 +171,24 @@ pub fn type_check_with_imports(
                     self_ty: Some(self_ty_for_method),
                     current_effects,
                     handled_effects: Vec::new(),
+                    int_lit_vars: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&m.body);
 
                 if m.return_type.is_some() {
                     let expected_ret = ctx.current_return_ty.clone();
                     if ctx.unify.unify(&expected_ret, &body_ty).is_err() {
-                        diagnostics.push(errors::return_type_mismatch(
-                            &unify.resolve(&expected_ret),
-                            &unify.resolve(&body_ty),
+                        ctx.diagnostics.push(errors::return_type_mismatch(
+                            &ctx.unify.resolve(&expected_ret),
+                            &ctx.unify.resolve(&body_ty),
                             file_name,
                             item.span,
                             source,
                         ));
                     }
                 }
+
+                ctx.default_int_lits();
             }
             ItemKind::Constructor(c) => {
                 // Return type: explicit or Self (the struct type).
@@ -220,19 +227,22 @@ pub fn type_check_with_imports(
                     self_ty: None,
                     current_effects: Vec::new(),
                     handled_effects: Vec::new(),
+                    int_lit_vars: Vec::new(),
                 };
                 let body_ty = ctx.infer_block_ty(&c.body);
 
                 let expected_ret = ctx.current_return_ty.clone();
                 if ctx.unify.unify(&expected_ret, &body_ty).is_err() {
-                    diagnostics.push(errors::return_type_mismatch(
-                        &unify.resolve(&expected_ret),
-                        &unify.resolve(&body_ty),
+                    ctx.diagnostics.push(errors::return_type_mismatch(
+                        &ctx.unify.resolve(&expected_ret),
+                        &ctx.unify.resolve(&body_ty),
                         file_name,
                         item.span,
                         source,
                     ));
                 }
+
+                ctx.default_int_lits();
             }
             ItemKind::Test(t) => {
                 // Type-check test bodies.
@@ -249,8 +259,10 @@ pub fn type_check_with_imports(
                     self_ty: None,
                     current_effects: Vec::new(),
                     handled_effects: Vec::new(),
+                    int_lit_vars: Vec::new(),
                 };
                 ctx.infer_stmts(&t.body);
+                ctx.default_int_lits();
             }
             _ => {}
         }

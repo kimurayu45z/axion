@@ -31,6 +31,8 @@ pub(crate) struct InferCtx<'a> {
     pub current_effects: Vec<String>,
     /// Effects that are handled in the current scope (via handle expressions).
     pub handled_effects: Vec<String>,
+    /// Infer vars created for unsuffixed integer literals (for defaulting unresolved ones to i64).
+    pub int_lit_vars: Vec<crate::ty::InferVar>,
 }
 
 impl<'a> InferCtx<'a> {
@@ -146,7 +148,7 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    fn infer_int_lit(&self, suffix: &Option<String>) -> Ty {
+    fn infer_int_lit(&mut self, suffix: &Option<String>) -> Ty {
         match suffix.as_deref() {
             Some(s) => {
                 if let Some(prim) = PrimTy::from_name(s) {
@@ -155,7 +157,12 @@ impl<'a> InferCtx<'a> {
                     Ty::Prim(PrimTy::I64)
                 }
             }
-            None => Ty::Prim(PrimTy::I64),
+            None => {
+                // Polymorphic: infer from context.
+                let var = self.unify.fresh_var();
+                self.int_lit_vars.push(var);
+                Ty::Infer(var)
+            }
         }
     }
 
@@ -1608,6 +1615,34 @@ impl<'a> InferCtx<'a> {
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "?".to_string());
 
+            // If the concrete type is itself a type parameter, check its own bounds.
+            if let Ty::Param(param_did) = concrete_ty {
+                if let Some(param_bounds) = self.env.type_param_bounds.get(param_did).cloned() {
+                    // Direct match: T: SInt satisfies SInt bound.
+                    if param_bounds.contains(iface_def_id) {
+                        continue;
+                    }
+                    // Subset check: T: SInt satisfies Number bound if all impls of SInt
+                    // are contained in impls of Number.
+                    let satisfied = if let Some(required_impls) = self.env.interface_impls.get(iface_def_id) {
+                        param_bounds.iter().any(|pb| {
+                            self.env.interface_impls.get(pb)
+                                .map(|bound_impls| bound_impls.iter().all(|t| required_impls.contains(t)))
+                                .unwrap_or(false)
+                        })
+                    } else { false };
+                    if satisfied { continue; }
+                    self.diagnostics.push(errors::unsatisfied_bound(
+                        concrete_ty,
+                        &iface_name,
+                        self.file_name,
+                        span,
+                        self.source,
+                    ));
+                }
+                continue;
+            }
+
             let required_methods = self.env.interface_methods.get(iface_def_id)
                 .cloned().unwrap_or_default();
 
@@ -1814,6 +1849,38 @@ impl<'a> InferCtx<'a> {
     pub fn infer_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             self.infer_stmt(stmt);
+        }
+    }
+
+    /// Default unresolved integer literal inference vars to i64,
+    /// and validate that resolved ones are numeric or type parameters.
+    pub fn default_int_lits(&mut self) {
+        let vars = self.int_lit_vars.clone();
+        for var in &vars {
+            let ty = Ty::Infer(*var);
+            let resolved = self.unify.resolve(&ty);
+            match &resolved {
+                // Already resolved to a concrete numeric type — ok.
+                Ty::Prim(p) if p.is_numeric() => {}
+                // Resolved to a type parameter — ok (generic context).
+                Ty::Param(_) => {}
+                // Error poison — ok, don't cascade.
+                Ty::Error => {}
+                // Still an unresolved Infer var — default to i64.
+                Ty::Infer(_) => {
+                    let _ = self.unify.unify(&ty, &Ty::Prim(PrimTy::I64));
+                }
+                // Resolved to a non-numeric type — report type mismatch.
+                _ => {
+                    self.diagnostics.push(errors::type_mismatch(
+                        &Ty::Prim(PrimTy::I64),
+                        &resolved,
+                        self.file_name,
+                        Span { start: 0, end: 0 },
+                        self.source,
+                    ));
+                }
+            }
         }
     }
 }

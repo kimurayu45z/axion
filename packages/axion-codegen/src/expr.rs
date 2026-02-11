@@ -140,24 +140,24 @@ fn compile_int_lit<'ctx>(
     expr: &Expr,
     val: i128,
 ) -> Option<BasicValueEnum<'ctx>> {
-    let ty = ctx.type_check.expr_types.get(&expr.span.start);
-    match ty {
-        Some(Ty::Prim(PrimTy::I8)) | Some(Ty::Prim(PrimTy::U8)) => {
+    let ty = get_expr_ty(ctx, expr);
+    match &ty {
+        Ty::Prim(PrimTy::I8) | Ty::Prim(PrimTy::U8) => {
             Some(ctx.context.i8_type().const_int(val as u64, false).into())
         }
-        Some(Ty::Prim(PrimTy::I16)) | Some(Ty::Prim(PrimTy::U16)) => {
+        Ty::Prim(PrimTy::I16) | Ty::Prim(PrimTy::U16) => {
             Some(ctx.context.i16_type().const_int(val as u64, false).into())
         }
-        Some(Ty::Prim(PrimTy::I32)) | Some(Ty::Prim(PrimTy::U32)) => {
+        Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U32) => {
             Some(ctx.context.i32_type().const_int(val as u64, false).into())
         }
-        Some(Ty::Prim(PrimTy::I128)) | Some(Ty::Prim(PrimTy::U128)) => {
+        Ty::Prim(PrimTy::I128) | Ty::Prim(PrimTy::U128) => {
             Some(ctx.context.i128_type().const_int(val as u64, false).into())
         }
-        Some(Ty::Prim(PrimTy::F32)) => {
+        Ty::Prim(PrimTy::F32) => {
             Some(ctx.context.f32_type().const_float(val as f64).into())
         }
-        Some(Ty::Prim(PrimTy::F64)) => {
+        Ty::Prim(PrimTy::F64) => {
             Some(ctx.context.f64_type().const_float(val as f64).into())
         }
         _ => {
