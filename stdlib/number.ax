@@ -6,4 +6,6 @@ interface UInt
 
 interface Int
 
+interface SNumber
+
 interface Float

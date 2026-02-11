@@ -65,7 +65,7 @@ impl TypeEnv {
     }
 
     /// Register built-in interface implementations for marker interfaces.
-    /// Maps primitive types to their marker interfaces (SInt, UInt, Int, Float, Number).
+    /// Maps primitive types to their marker interfaces (SInt, UInt, Int, SNumber, Float, Number).
     pub fn register_builtin_impls(&mut self, symbols: &[Symbol]) {
         use crate::ty::PrimTy;
 
@@ -89,6 +89,13 @@ impl TypeEnv {
             let all_int: Vec<Ty> = signed.iter().chain(unsigned.iter())
                 .map(|p| Ty::Prim(*p)).collect();
             self.interface_impls.insert(int_sym.def_id, all_int);
+        }
+
+        // SNumber = SInt ∪ Float
+        if let Some(snumber_sym) = symbols.iter().find(|s| s.name == "SNumber" && s.kind == SymbolKind::Interface) {
+            let all_signed_numeric: Vec<Ty> = signed.iter().chain(floats.iter())
+                .map(|p| Ty::Prim(*p)).collect();
+            self.interface_impls.insert(snumber_sym.def_id, all_signed_numeric);
         }
 
         // Number = Int ∪ Float = SInt ∪ UInt ∪ Float
