@@ -1,0 +1,71 @@
+fn abs(x: i64) -> i64
+    if x < 0
+        0 - x
+    else
+        x
+
+fn min(a: i64, b: i64) -> i64
+    if a < b
+        a
+    else
+        b
+
+fn max(a: i64, b: i64) -> i64
+    if a > b
+        a
+    else
+        b
+
+fn clamp(x: i64, lo: i64, hi: i64) -> i64
+    if x < lo
+        lo
+    else
+        if x > hi
+            hi
+        else
+            x
+
+fn sign(x: i64) -> i64
+    if x > 0
+        1
+    else
+        if x < 0
+            0 - 1
+        else
+            0
+
+fn pow(base: i64, exp: i64) -> i64
+    let mut result: i64 = 1
+    let mut i: i64 = 0
+    while i < exp
+        result = result * base
+        i = i + 1
+    result
+
+fn gcd(a: i64, b: i64) -> i64
+    let mut x = abs(a)
+    let mut y = abs(b)
+    while y > 0
+        let t = y
+        y = x % t
+        x = t
+    x
+
+fn lcm(a: i64, b: i64) -> i64
+    let g = gcd(a, b)
+    if g == 0
+        0
+    else
+        abs(a) / g * abs(b)
+
+fn is_even(x: i64) -> i64
+    if x % 2 == 0
+        1
+    else
+        0
+
+fn is_odd(x: i64) -> i64
+    if x % 2 == 0
+        0
+    else
+        1

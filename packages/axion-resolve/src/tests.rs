@@ -340,8 +340,9 @@ struct Point
     x: f64
     y: f64
 
-fn@[Point] get_x() -> f64
-    self.x
+impl Point
+    fn get_x(self) -> f64
+        self.x
 ";
     let (_, diags) = resolve_source(src);
     assert!(errors(&diags).is_empty(), "errors: {diags:?}");
@@ -440,8 +441,9 @@ struct Point
 fn Point.origin() -> Self
     Self #{x: 0.0, y: 0.0}
 
-fn@[Point] distance(other: Point) -> f64
-    self.x
+impl Point
+    fn distance(self, other: Point) -> f64
+        self.x
 
 fn identity[T](x: T) -> T
     x

@@ -153,6 +153,61 @@ fn collect_from_expr(
             collect_from_expr(inner, resolved, type_check, result, seen);
         }
         ExprKind::Call { func, args } => {
+            // Extract the field access from the func, handling optional TypeApp wrapping.
+            // This covers both `obj.method(args)` and `obj.method[U](args)`.
+            let field_info: Option<(&Expr, &str)> = match &func.kind {
+                ExprKind::Field { expr: inner, name } => Some((inner, name.as_str())),
+                ExprKind::TypeApp { expr: ta_inner, .. } => {
+                    if let ExprKind::Field { expr: inner, name } = &ta_inner.kind {
+                        Some((inner, name.as_str()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            // Check for method calls on generic receiver types.
+            if let Some((inner, method_name)) = field_info {
+                if let Some(inner_ty) = type_check.expr_types.get(&inner.span.start) {
+                    let type_args = match inner_ty {
+                        Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
+                        _ => vec![],
+                    };
+                    if !type_args.is_empty() {
+                        let type_name = match inner_ty {
+                            Ty::Enum { def_id, .. } | Ty::Struct { def_id, .. } => {
+                                resolved.symbols.iter()
+                                    .find(|s| s.def_id == *def_id)
+                                    .map(|s| s.name.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(type_name) = type_name {
+                            let method_key = format!("{}.{}", type_name, method_name);
+                            let method_sym = resolved.symbols.iter().find(|s| {
+                                s.name == method_key
+                                    && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+                            });
+                            if let Some(method_sym) = method_sym {
+                                // The receiver has non-empty type_args, so the method
+                                // needs monomorphization regardless of whether the method
+                                // itself has additional type params.
+                                let key = SpecKey {
+                                    fn_def_id: method_sym.def_id,
+                                    type_args: type_args.clone(),
+                                };
+                                if !seen.contains(&key) {
+                                    seen.insert(key);
+                                    result.push(Instantiation {
+                                        fn_def_id: method_sym.def_id,
+                                        type_args,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             collect_from_expr(func, resolved, type_check, result, seen);
             for arg in args {
                 collect_from_expr(&arg.expr, resolved, type_check, result, seen);

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use axion_resolve::def_id::DefId;
 use axion_syntax::*;
+use axion_syntax::ReceiverModifier;
 use axion_types::ty::Ty;
 
 /// A unique specialization key: (original fn DefId, concrete type args).
@@ -30,6 +31,10 @@ pub struct SpecializedFn {
     pub return_type: Option<TypeExpr>,
     /// Substitution map: TypeParam DefId → concrete Ty.
     pub subst: HashMap<DefId, Ty>,
+    /// Whether this is a method (has self receiver).
+    pub is_method: bool,
+    /// Receiver modifier for methods.
+    pub receiver_modifier: Option<ReceiverModifier>,
 }
 
 /// Output of the monomorphization pass.

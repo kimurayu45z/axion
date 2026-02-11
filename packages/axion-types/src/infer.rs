@@ -361,7 +361,20 @@ impl<'a> InferCtx<'a> {
             });
             if let Some(sym) = method_sym {
                 if let Some(info) = self.env.defs.get(&sym.def_id) {
-                    let method_ty = info.ty.clone();
+                    let mut method_ty = info.ty.clone();
+
+                    // Build substitution from receiver type_args for generic receiver methods.
+                    let type_args = match &resolved {
+                        Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
+                        _ => vec![],
+                    };
+                    if !type_args.is_empty() {
+                        let subst = self.build_method_receiver_subst(&resolved, sym, &type_args);
+                        if !subst.is_empty() {
+                            method_ty = substitute(&method_ty, &subst);
+                        }
+                    }
+
                     // For instance method calls (not type-level), strip the self parameter.
                     if !is_type_access && sym.kind == SymbolKind::Method {
                         if let Ty::Fn { params, ret } = &method_ty {
@@ -617,6 +630,61 @@ impl<'a> InferCtx<'a> {
                 None
             }
         }
+    }
+
+    /// Build substitution map from a method's type params to the receiver's concrete type_args.
+    ///
+    /// For example, if `impl[T] Option[T]` has a method `unwrap_or(self, default: T) -> T`,
+    /// and we call it on `Option[i64]`, this builds { T_def_id → i64 }.
+    fn build_method_receiver_subst(
+        &self,
+        resolved_ty: &Ty,
+        method_sym: &axion_resolve::symbol::Symbol,
+        type_args: &[Ty],
+    ) -> HashMap<DefId, Ty> {
+        let mut subst = HashMap::new();
+
+        // Get the parent type DefId and its type param names.
+        let parent_def_id = match resolved_ty {
+            Ty::Enum { def_id, .. } | Ty::Struct { def_id, .. } => *def_id,
+            _ => return subst,
+        };
+
+        let parent_sym = self.resolved.symbols.iter().find(|s| s.def_id == parent_def_id);
+        let Some(parent_sym) = parent_sym else { return subst };
+
+        // Get parent type parameter names (ordered).
+        let parent_type_param_names: Vec<String> = self.resolved.symbols.iter()
+            .filter(|s| {
+                s.kind == SymbolKind::TypeParam
+                    && s.name != "Self"
+                    && s.span.start >= parent_sym.span.start
+                    && s.span.end <= parent_sym.span.end
+            })
+            .map(|s| s.name.clone())
+            .collect();
+
+        // Collect all Ty::Param def_ids used in the method's function type.
+        let method_info = self.env.defs.get(&method_sym.def_id);
+        let Some(method_info) = method_info else { return subst };
+        let mut param_def_ids = Vec::new();
+        collect_param_def_ids(&method_info.ty, &mut param_def_ids);
+
+        // For each param DefId, look up its name and match against parent type params.
+        for def_id in &param_def_ids {
+            let param_sym = self.resolved.symbols.iter().find(|s| {
+                s.def_id == *def_id && s.kind == SymbolKind::TypeParam
+            });
+            if let Some(ps) = param_sym {
+                if let Some(idx) = parent_type_param_names.iter().position(|n| *n == ps.name) {
+                    if idx < type_args.len() {
+                        subst.insert(*def_id, type_args[idx].clone());
+                    }
+                }
+            }
+        }
+
+        subst
     }
 
     /// Check if an expression refers to a type definition (not an instance).
@@ -1056,7 +1124,28 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
-                // If we can't find type params, just return the original fn type.
+                // For method calls with turbofish (e.g. x.map[i64](...)),
+                // the field expression won't have a resolver resolution.
+                // Collect remaining Ty::Param DefIds from the type and substitute.
+                let mut remaining_params = Vec::new();
+                collect_param_def_ids(&resolved_base, &mut remaining_params);
+                // Deduplicate while preserving order.
+                let mut seen_params = std::collections::HashSet::new();
+                remaining_params.retain(|d| seen_params.insert(*d));
+
+                if !remaining_params.is_empty() && remaining_params.len() == ty_args.len() {
+                    let mut subst: HashMap<DefId, Ty> = HashMap::new();
+                    for (param_def_id, arg_ty) in remaining_params.iter().zip(ty_args.iter()) {
+                        subst.insert(*param_def_id, arg_ty.clone());
+                    }
+                    let new_params: Vec<Ty> = params.iter().map(|p| substitute(p, &subst)).collect();
+                    let new_ret = substitute(ret, &subst);
+                    return Ty::Fn {
+                        params: new_params,
+                        ret: Box::new(new_ret),
+                    };
+                }
+
                 resolved_base
             }
             Ty::Enum { def_id, .. } => Ty::Enum {
@@ -1725,6 +1814,39 @@ fn modifier_to_str(m: &ParamModifier) -> &'static str {
 }
 
 /// Substitute type parameters with concrete types.
+fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
+    match ty {
+        Ty::Param(def_id) => {
+            if !out.contains(def_id) {
+                out.push(*def_id);
+            }
+        }
+        Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+            for t in type_args {
+                collect_param_def_ids(t, out);
+            }
+        }
+        Ty::Tuple(elems) => {
+            for t in elems {
+                collect_param_def_ids(t, out);
+            }
+        }
+        Ty::Fn { params, ret } => {
+            for t in params {
+                collect_param_def_ids(t, out);
+            }
+            collect_param_def_ids(ret, out);
+        }
+        Ty::Ref(inner) | Ty::Slice(inner) => {
+            collect_param_def_ids(inner, out);
+        }
+        Ty::Array { elem, .. } => {
+            collect_param_def_ids(elem, out);
+        }
+        _ => {}
+    }
+}
+
 fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
     match ty {
         Ty::Param(def_id) => subst.get(def_id).cloned().unwrap_or_else(|| ty.clone()),

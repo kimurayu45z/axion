@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use axion_resolve::def_id::{DefId, SymbolKind};
+use axion_resolve::def_id::DefId;
 use axion_resolve::ResolveOutput;
 use axion_syntax::*;
 use axion_types::env::TypeEnv;
@@ -25,29 +25,37 @@ pub fn specialize(
             .find(|s| s.def_id == inst.fn_def_id);
         let Some(fn_sym) = fn_sym else { continue };
 
-        // Find the function's AST node.
-        let fn_def = source_file.items.iter().find_map(|item| {
+        // Find the function's or method's AST node.
+        enum FnOrMethod<'a> {
+            Fn(&'a FnDef),
+            Method(&'a MethodDef),
+        }
+        let fn_or_method = source_file.items.iter().find_map(|item| {
             if item.span == fn_sym.span {
-                if let ItemKind::Function(f) = &item.kind {
-                    return Some(f);
+                match &item.kind {
+                    ItemKind::Function(f) => Some(FnOrMethod::Fn(f)),
+                    ItemKind::Method(m) => Some(FnOrMethod::Method(m)),
+                    _ => None,
                 }
+            } else {
+                None
             }
-            None
         });
-        let Some(fn_def) = fn_def else { continue };
+        let Some(fn_or_method) = fn_or_method else { continue };
 
-        // Find the function's type parameter DefIds.
-        let type_param_defs: Vec<DefId> = resolved
-            .symbols
-            .iter()
-            .filter(|s| {
-                s.kind == SymbolKind::TypeParam
-                    && s.name != "Self"
-                    && s.span.start >= fn_sym.span.start
-                    && s.span.end <= fn_sym.span.end
-            })
-            .map(|s| s.def_id)
-            .collect();
+        // Find the function's type parameter DefIds by collecting Ty::Param
+        // from the function's registered type. This handles impl-level type params
+        // whose source spans are outside the method's span.
+        let type_param_defs: Vec<DefId> = if let Some(info) = type_env.defs.get(&inst.fn_def_id) {
+            let mut params = Vec::new();
+            collect_param_def_ids(&info.ty, &mut params);
+            // Deduplicate while preserving order.
+            let mut seen_set = std::collections::HashSet::new();
+            params.retain(|d| seen_set.insert(*d));
+            params
+        } else {
+            Vec::new()
+        };
 
         if type_param_defs.len() != inst.type_args.len() {
             continue;
@@ -67,8 +75,22 @@ pub fn specialize(
             continue;
         };
 
-        // Generate mangled name.
-        let mangled_name = mangle_name(&fn_def.name, &inst.type_args);
+        // Generate mangled name and build SpecializedFn.
+        let (mangled_name, body, params, return_type, is_method, receiver_modifier) = match &fn_or_method {
+            FnOrMethod::Fn(f) => {
+                let name = mangle_name(&f.name, &inst.type_args);
+                (name, f.body.clone(), f.params.clone(), f.return_type.clone(), false, None)
+            }
+            FnOrMethod::Method(m) => {
+                let receiver_name = match &m.receiver_type {
+                    TypeExpr::Named { name, .. } => name.clone(),
+                    _ => "Unknown".to_string(),
+                };
+                let base_name = format!("{}.{}", receiver_name, m.name);
+                let name = mangle_name(&base_name, &inst.type_args);
+                (name, m.body.clone(), m.params.clone(), m.return_type.clone(), true, Some(m.receiver_modifier.clone()))
+            }
+        };
 
         let key = SpecKey {
             fn_def_id: inst.fn_def_id,
@@ -81,10 +103,12 @@ pub fn specialize(
             type_args: inst.type_args.clone(),
             mangled_name,
             fn_ty: specialized_ty,
-            body: fn_def.body.clone(),
-            params: fn_def.params.clone(),
-            return_type: fn_def.return_type.clone(),
+            body,
+            params,
+            return_type,
             subst,
+            is_method,
+            receiver_modifier,
         });
     }
 
@@ -115,6 +139,40 @@ pub fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
             len: *len,
         },
         _ => ty.clone(),
+    }
+}
+
+/// Collect all Ty::Param DefIds from a type.
+fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
+    match ty {
+        Ty::Param(def_id) => {
+            if !out.contains(def_id) {
+                out.push(*def_id);
+            }
+        }
+        Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+            for t in type_args {
+                collect_param_def_ids(t, out);
+            }
+        }
+        Ty::Tuple(elems) => {
+            for t in elems {
+                collect_param_def_ids(t, out);
+            }
+        }
+        Ty::Fn { params, ret } => {
+            for t in params {
+                collect_param_def_ids(t, out);
+            }
+            collect_param_def_ids(ret, out);
+        }
+        Ty::Ref(inner) | Ty::Slice(inner) => {
+            collect_param_def_ids(inner, out);
+        }
+        Ty::Array { elem, .. } => {
+            collect_param_def_ids(elem, out);
+        }
+        _ => {}
     }
 }
 

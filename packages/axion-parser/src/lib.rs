@@ -37,7 +37,9 @@ impl Parser {
         self.skip_newlines();
 
         while !self.is_at_end() {
-            if let Some(item) = self.parse_item() {
+            if let Some(impl_items) = self.try_parse_impl_block() {
+                items.extend(impl_items);
+            } else if let Some(item) = self.parse_item() {
                 items.push(item);
             } else {
                 // Skip to next potential item
@@ -59,15 +61,8 @@ impl Parser {
 
         match self.peek_kind() {
             Some(TokenKind::Fn) => {
-                // Disambiguate: fn@[Type] (method), fn Type.name (constructor), fn name (function)
-                // Peek ahead after `fn`
-                if self.peek_at_kind(1) == Some(TokenKind::At) {
-                    let method_def = self.parse_method_def(vis)?;
-                    Some(Item {
-                        span: start_span.merge(self.prev_span()),
-                        kind: ItemKind::Method(method_def),
-                    })
-                } else if self.is_constructor_def() {
+                // Disambiguate: fn Type.name (constructor), fn name (function)
+                if self.is_constructor_def() {
                     let ctor_def = self.parse_constructor_def(vis)?;
                     Some(Item {
                         span: start_span.merge(self.prev_span()),
@@ -222,37 +217,115 @@ impl Parser {
         })
     }
 
-    // --- Method definition: fn@[Type] name() ---
+    // --- impl block: impl[T] Type[T] { methods... } ---
 
-    fn parse_method_def(&mut self, vis: Visibility) -> Option<MethodDef> {
-        self.expect(&TokenKind::Fn)?;
-        self.expect(&TokenKind::At)?;
-        self.expect(&TokenKind::LBracket)?;
+    /// Try to parse an impl block at the current position.
+    /// Returns Some(Vec<Item>) if the current token is `impl` (or `pub impl`),
+    /// otherwise returns None without consuming any tokens.
+    fn try_parse_impl_block(&mut self) -> Option<Vec<Item>> {
+        let saved_pos = self.pos;
 
-        // Parse receiver modifier: &, mut, move (default is borrow)
-        let receiver_modifier = if self.check(&TokenKind::Mut) {
-            self.advance();
-            ReceiverModifier::Mut
-        } else if self.check(&TokenKind::Move) {
-            self.advance();
-            ReceiverModifier::Move
+        // Check for optional `pub` before `impl`
+        let vis = if self.check(&TokenKind::Pub) {
+            if self.peek_at_kind(1) == Some(TokenKind::Impl) {
+                self.advance(); // consume pub
+                Visibility::Pub
+            } else {
+                return None;
+            }
         } else {
-            ReceiverModifier::Borrow
+            Visibility::Private
         };
 
+        if !self.check(&TokenKind::Impl) {
+            self.pos = saved_pos;
+            return None;
+        }
+
+        match self.parse_impl_block(vis) {
+            Some(items) => Some(items),
+            None => {
+                // Parsing failed — restore position.
+                self.pos = saved_pos;
+                None
+            }
+        }
+    }
+
+    /// Parse an impl block and desugar to Method/Constructor items.
+    ///
+    /// Syntax:
+    ///   impl[T] Option[T]
+    ///       fn unwrap_or(self, default: T) -> T
+    ///           ...
+    ///       fn new(value: T) -> Option[T]
+    ///           ...
+    fn parse_impl_block(&mut self, vis: Visibility) -> Option<Vec<Item>> {
+        let block_start = self.current_span();
+        self.expect(&TokenKind::Impl)?;
+
+        // Parse optional type params: [T], [T, E], etc.
+        let impl_type_params = if self.check(&TokenKind::LBracket) {
+            self.parse_type_params()?
+        } else {
+            Vec::new()
+        };
+
+        // Parse the target type: Option[T], Counter, etc.
         let receiver_type = self.parse_type_expr()?;
-        self.expect(&TokenKind::RBracket)?;
+
+        self.skip_newlines();
+
+        let mut items = Vec::new();
+
+        // Parse indented method block
+        if self.check(&TokenKind::Indent) {
+            self.advance();
+            loop {
+                self.skip_newlines();
+                if self.check(&TokenKind::Dedent) || self.is_at_end() {
+                    break;
+                }
+                if let Some(item) = self.parse_impl_method(vis.clone(), &impl_type_params, &receiver_type) {
+                    items.push(item);
+                } else {
+                    self.advance();
+                }
+            }
+            if self.check(&TokenKind::Dedent) {
+                self.advance();
+            }
+        }
+
+        let _ = block_start; // Used for span tracking if needed
+        Some(items)
+    }
+
+    /// Parse a single method inside an impl block.
+    /// Desugars to ItemKind::Method or ItemKind::Constructor.
+    fn parse_impl_method(
+        &mut self,
+        vis: Visibility,
+        impl_type_params: &[TypeParam],
+        receiver_type: &TypeExpr,
+    ) -> Option<Item> {
+        let start_span = self.current_span();
+        self.expect(&TokenKind::Fn)?;
 
         let name = self.expect_ident()?;
 
-        let type_params = if self.check(&TokenKind::LBracket) {
+        // Parse method-specific type params: fn map[U](...)
+        let method_type_params = if self.check(&TokenKind::LBracket) {
             self.parse_type_params()?
         } else {
             Vec::new()
         };
 
         self.expect(&TokenKind::LParen)?;
-        let params = self.parse_params()?;
+
+        // Check for self/mut self/move self at the beginning of the param list
+        let (receiver_modifier, params) = self.parse_impl_method_params()?;
+
         self.expect(&TokenKind::RParen)?;
 
         let return_type = if self.check(&TokenKind::Arrow) {
@@ -272,17 +345,97 @@ impl Parser {
         self.skip_newlines();
         let body = self.parse_block()?;
 
-        Some(MethodDef {
-            vis,
-            receiver_modifier,
-            receiver_type,
-            name,
-            type_params,
-            params,
-            return_type,
-            effects,
-            body,
-        })
+        let item_span = start_span.merge(self.prev_span());
+
+        // Merge impl type_params + method type_params
+        let mut merged_type_params = impl_type_params.to_vec();
+        merged_type_params.extend(method_type_params);
+
+        if let Some(recv_mod) = receiver_modifier {
+            // Instance method (has self parameter)
+            Some(Item {
+                span: item_span,
+                kind: ItemKind::Method(MethodDef {
+                    vis,
+                    receiver_modifier: recv_mod,
+                    receiver_type: receiver_type.clone(),
+                    name,
+                    type_params: merged_type_params,
+                    params,
+                    return_type,
+                    effects,
+                    body,
+                }),
+            })
+        } else {
+            // Static method (no self parameter) → desugar to Constructor
+            let type_name = match receiver_type {
+                TypeExpr::Named { name, .. } => name.clone(),
+                _ => "Unknown".to_string(),
+            };
+            Some(Item {
+                span: item_span,
+                kind: ItemKind::Constructor(ConstructorDef {
+                    vis,
+                    type_name,
+                    name,
+                    type_params: merged_type_params,
+                    params,
+                    return_type,
+                    body,
+                }),
+            })
+        }
+    }
+
+    /// Parse parameters for an impl method, handling self/mut self/move self.
+    /// Returns (Option<ReceiverModifier>, Vec<Param>).
+    /// - Some(modifier) if self was present
+    /// - None if no self (static method)
+    fn parse_impl_method_params(&mut self) -> Option<(Option<ReceiverModifier>, Vec<Param>)> {
+        // Check for empty params
+        if self.check(&TokenKind::RParen) {
+            return Some((None, Vec::new()));
+        }
+
+        // Check for self/mut self/move self
+        let receiver_modifier = if self.check(&TokenKind::SelfLower) {
+            self.advance();
+            // Consume trailing comma if present
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+            Some(ReceiverModifier::Borrow)
+        } else if self.check(&TokenKind::Mut)
+            && self.peek_at_kind(1) == Some(TokenKind::SelfLower)
+        {
+            self.advance(); // mut
+            self.advance(); // self
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+            Some(ReceiverModifier::Mut)
+        } else if self.check(&TokenKind::Move)
+            && self.peek_at_kind(1) == Some(TokenKind::SelfLower)
+        {
+            self.advance(); // move
+            self.advance(); // self
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+            Some(ReceiverModifier::Move)
+        } else {
+            None
+        };
+
+        // Parse remaining params (after self, if any)
+        let params = if self.check(&TokenKind::RParen) {
+            Vec::new()
+        } else {
+            self.parse_params()?
+        };
+
+        Some((receiver_modifier, params))
     }
 
     // --- Constructor definition: fn Type.name() ---
@@ -2313,28 +2466,12 @@ impl Parser {
         let span = self.current_span();
         self.expect(&TokenKind::Fn)?;
 
-        // Parse optional receiver modifier: @[mut] or @[move]
-        let receiver_modifier = if self.check(&TokenKind::At) {
-            self.advance();
-            self.expect(&TokenKind::LBracket)?;
-            let modifier = if self.check(&TokenKind::Mut) {
-                self.advance();
-                ReceiverModifier::Mut
-            } else if self.check(&TokenKind::Move) {
-                self.advance();
-                ReceiverModifier::Move
-            } else {
-                ReceiverModifier::Borrow
-            };
-            self.expect(&TokenKind::RBracket)?;
-            Some(modifier)
-        } else {
-            None
-        };
-
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
-        let params = self.parse_params()?;
+
+        // Parse params with possible self/mut self/move self
+        let (receiver_modifier, params) = self.parse_impl_method_params()?;
+
         self.expect(&TokenKind::RParen)?;
 
         let return_type = if self.check(&TokenKind::Arrow) {
@@ -3485,7 +3622,7 @@ mod tests {
 
     #[test]
     fn test_parse_method_def() {
-        let source = "fn@[User] display_name() -> &str\n    self.name\n";
+        let source = "impl User\n    fn display_name(self) -> &str\n        self.name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3500,7 +3637,7 @@ mod tests {
 
     #[test]
     fn test_parse_method_mut_receiver() {
-        let source = "fn@[mut User] set_name(name: str)\n    self.name\n";
+        let source = "impl User\n    fn set_name(mut self, name: str)\n        self.name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3557,7 +3694,7 @@ mod tests {
 
     #[test]
     fn test_parse_self_expr() {
-        let source = "fn@[User] name() -> &str\n    self.name\n";
+        let source = "impl User\n    fn name(self) -> &str\n        self.name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3671,8 +3808,9 @@ mod tests {
     fn test_parse_full_example() {
         // Test the full example from the plan
         let source = concat!(
-            "fn@[User] display_name() -> &str\n",
-            "    self.name\n",
+            "impl User\n",
+            "    fn display_name(self) -> &str\n",
+            "        self.name\n",
             "\n",
             "fn User.new(name: str, age: u32) -> Self\n",
             "    Self #{name: name, age: age}\n",
@@ -3719,7 +3857,7 @@ mod tests {
 
     #[test]
     fn test_parse_assign_field() {
-        let source = "fn@[mut User] rename(new_name: str)\n    self.name = new_name\n";
+        let source = "impl User\n    fn rename(mut self, new_name: str)\n        self.name = new_name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4351,7 +4489,7 @@ mod tests {
 
     #[test]
     fn test_parse_interface_method_mut() {
-        let source = "interface MutableCollection\n    fn@[mut] clear()\n    fn len() -> usize\n";
+        let source = "interface MutableCollection\n    fn clear(mut self)\n    fn len() -> usize\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4369,7 +4507,7 @@ mod tests {
 
     #[test]
     fn test_parse_interface_method_move() {
-        let source = "interface Consumable\n    fn@[move] consume() -> Data\n";
+        let source = "interface Consumable\n    fn consume(move self) -> Data\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4798,7 +4936,7 @@ mod tests {
 
     #[test]
     fn test_parse_generic_receiver_type() {
-        let source = "fn@[Vec[T]] len() -> usize\n    0\n";
+        let source = "impl[T] Vec[T]\n    fn len(self) -> usize\n        0\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4918,13 +5056,14 @@ mod tests {
             "        Value.List([first, ..rest]) => \"list\"\n",
             "        _ => \"other\"\n",
             "\n",
-            "fn@[mut User] rename(new_name: String)\n",
-            "    self.name = new_name\n",
+            "impl User\n",
+            "    fn rename(mut self, new_name: String)\n",
+            "        self.name = new_name\n",
             "\n",
             "let {data, ..} = view\n",
             "\n",
             "interface MutableCollection\n",
-            "    fn@[mut] clear()\n",
+            "    fn clear(mut self)\n",
             "    fn len() -> usize\n",
             "\n",
             "extern \"C\"\n",

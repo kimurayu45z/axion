@@ -292,8 +292,9 @@ struct Point
     x: f64
     y: f64
 
-fn@[Point] get_x() -> f64
-    self.x
+impl Point
+    fn get_x(self) -> f64
+        self.x
 ";
     let output = check_no_errors(source);
     // The field access self.x should resolve to f64.
@@ -354,8 +355,9 @@ struct Point
     x: f64
     y: f64
 
-fn@[Point] get_z() -> f64
-    self.z
+impl Point
+    fn get_z(self) -> f64
+        self.z
 ";
     let diags = check_errors(source);
     assert!(diags.iter().any(|d| d.code == "E0202"));
@@ -393,8 +395,9 @@ struct Point
 fn Point.origin() -> Self
     Self #{x: 0.0, y: 0.0}
 
-fn@[Point] distance(other: Point) -> f64
-    self.x
+impl Point
+    fn distance(self, other: Point) -> f64
+        self.x
 
 fn main()
     let p = Point.origin()
@@ -485,8 +488,9 @@ struct Point
 fn Point.origin() -> Self
     Self #{x: 0.0, y: 0.0}
 
-fn@[Point] distance(other: Point) -> f64
-    self.x
+impl Point
+    fn distance(self, other: Point) -> f64
+        self.x
 
 fn identity[T](x: T) -> T
     x
@@ -666,8 +670,9 @@ struct Point
     x: f64
     y: f64
 
-fn@[Point] show() -> str
-    \"point\"
+impl Point
+    fn show(self) -> str
+        \"point\"
 
 fn display[T: Printable](x: T) -> str
     \"ok\"
@@ -711,11 +716,12 @@ interface Debug
 struct Foo
     x: i64
 
-fn@[Foo] show() -> str
-    \"foo\"
+impl Foo
+    fn show(self) -> str
+        \"foo\"
 
-fn@[Foo] debug() -> str
-    \"debug\"
+    fn debug(self) -> str
+        \"debug\"
 
 fn display[T: Show + Debug](x: T) -> str
     \"ok\"
@@ -776,8 +782,9 @@ interface Printable
 struct Bad
     x: i64
 
-fn@[Bad] show() -> i64
-    42
+impl Bad
+    fn show(self) -> i64
+        42
 
 fn display[T: Printable](x: T) -> str
     \"ok\"
@@ -838,8 +845,9 @@ struct Point
     x: f64
     y: f64
 
-fn@[Point] get_x() -> f64
-    self.x
+impl Point
+    fn get_x(self) -> f64
+        self.x
 
 fn main()
     let p = Point #{x: 1.0, y: 2.0}
@@ -851,14 +859,14 @@ fn main()
 #[test]
 fn receiver_move_mismatch() {
     // This test checks that a method with Move receiver is registered.
-    // The syntax for move receiver is `fn@[move Point]`.
     let source = "\
 struct Point
     x: f64
     y: f64
 
-fn@[move Point] consume() -> f64
-    self.x
+impl Point
+    fn consume(move self) -> f64
+        self.x
 ";
     // This should parse and type-check without errors
     // (Move receiver checking requires tracking variable ownership state).

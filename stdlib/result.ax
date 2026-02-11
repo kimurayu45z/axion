@@ -1,0 +1,34 @@
+pub enum Result[T, E]
+    Ok(value: T)
+    Err(error: E)
+
+impl[T, E] Result[T, E]
+    fn unwrap_or(self, default: T) -> T
+        match self
+            Result[T, E].Ok(v) => v
+            Result[T, E].Err(_) => default
+
+    fn map[U](self, f: Fn(T) -> U) -> Result[U, E]
+        match self
+            Result[T, E].Ok(v) => Result[U, E].Ok(f(v))
+            Result[T, E].Err(e) => Result[U, E].Err(e)
+
+    fn and_then[U](self, f: Fn(T) -> Result[U, E]) -> Result[U, E]
+        match self
+            Result[T, E].Ok(v) => f(v)
+            Result[T, E].Err(e) => Result[U, E].Err(e)
+
+    fn map_err[F](self, f: Fn(E) -> F) -> Result[T, F]
+        match self
+            Result[T, E].Ok(v) => Result[T, F].Ok(v)
+            Result[T, E].Err(e) => Result[T, F].Err(f(e))
+
+    fn is_ok(self) -> i64
+        match self
+            Result[T, E].Ok(_) => 1
+            Result[T, E].Err(_) => 0
+
+    fn is_err(self) -> i64
+        match self
+            Result[T, E].Ok(_) => 0
+            Result[T, E].Err(_) => 1

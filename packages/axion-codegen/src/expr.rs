@@ -682,7 +682,25 @@ fn compile_call<'ctx>(
                 .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
                 .map(|s| s.def_id);
             if let Some(def_id) = method_def_id {
-                if let Some(&fn_value) = ctx.functions.get(&def_id) {
+                // Try monomorphized version first for generic receiver types.
+                let type_args = match &inner_ty {
+                    Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
+                    _ => vec![],
+                };
+                let mono_fn = if !type_args.is_empty() {
+                    if let Some(mono) = ctx.mono_output {
+                        mono.lookup(def_id, &type_args)
+                            .and_then(|mangled| ctx.mono_fn_values.get(mangled).copied())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let fn_value_opt = mono_fn.or_else(|| ctx.functions.get(&def_id).copied());
+
+                if let Some(fn_value) = fn_value_opt {
                     // Compile receiver (self) as first arg.
                     let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
                     // Check if receiver should be passed by reference.
@@ -712,6 +730,88 @@ fn compile_call<'ctx>(
                             .build_call(fn_value, &compiled_args, "mcall")
                             .unwrap();
                         return call_val.try_as_basic_value().left();
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for method call with turbofish: x.method[U](...)
+    // where func is TypeApp { expr: Field { expr: inner, name }, type_args }
+    if let ExprKind::TypeApp { expr: type_app_inner, .. } = &func.kind {
+        if let ExprKind::Field { expr: inner, name: field_name } = &type_app_inner.kind {
+            let inner_ty = if let ExprKind::Ident(_) = &inner.kind {
+                ctx.resolved
+                    .resolutions
+                    .get(&inner.span.start)
+                    .and_then(|def_id| {
+                        ctx.local_tys.get(def_id).cloned().or_else(|| {
+                            ctx.type_env.defs.get(def_id).map(|info| {
+                                if ctx.current_subst.is_empty() {
+                                    info.ty.clone()
+                                } else {
+                                    axion_mono::specialize::substitute(&info.ty, &ctx.current_subst)
+                                }
+                            })
+                        })
+                    })
+                    .unwrap_or_else(|| get_expr_ty(ctx, inner))
+            } else {
+                get_expr_ty(ctx, inner)
+            };
+            if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
+                let method_key = format!("{}.{}", type_name, field_name);
+                let method_def_id = ctx
+                    .resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
+                    .map(|s| s.def_id);
+                if let Some(def_id) = method_def_id {
+                    let type_args = match &inner_ty {
+                        Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
+                        _ => vec![],
+                    };
+                    let mono_fn = if !type_args.is_empty() {
+                        if let Some(mono) = ctx.mono_output {
+                            mono.lookup(def_id, &type_args)
+                                .and_then(|mangled| ctx.mono_fn_values.get(mangled).copied())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let fn_value_opt = mono_fn.or_else(|| ctx.functions.get(&def_id).copied());
+                    if let Some(fn_value) = fn_value_opt {
+                        let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
+                        let recv_mod = ctx.type_env.receiver_modifiers.get(&def_id).cloned();
+                        let pass_by_ref = matches!(recv_mod, Some(ReceiverModifier::Mut) | Some(ReceiverModifier::Borrow));
+                        if pass_by_ref {
+                            if let Some(ptr) = compile_expr_addr(ctx, inner) {
+                                compiled_args.push(ptr.into());
+                            }
+                        } else if let Some(receiver) = compile_expr(ctx, inner) {
+                            compiled_args.push(receiver.into());
+                        }
+                        for arg in args {
+                            if let Some(val) = compile_expr(ctx, &arg.expr) {
+                                compiled_args.push(val.into());
+                            }
+                        }
+                        let ret_ty = get_expr_ty(ctx, call_expr);
+                        if is_void_ty(&ret_ty) {
+                            ctx.builder
+                                .build_call(fn_value, &compiled_args, "mcall")
+                                .unwrap();
+                            return None;
+                        } else {
+                            let call_val = ctx
+                                .builder
+                                .build_call(fn_value, &compiled_args, "mcall")
+                                .unwrap();
+                            return call_val.try_as_basic_value().left();
+                        }
                     }
                 }
             }

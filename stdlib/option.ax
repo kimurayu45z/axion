@@ -1,0 +1,29 @@
+pub enum Option[T]
+    Some(value: T)
+    None
+
+impl[T] Option[T]
+    fn unwrap_or(self, default: T) -> T
+        match self
+            Option[T].Some(v) => v
+            Option[T].None => default
+
+    fn map[U](self, f: Fn(T) -> U) -> Option[U]
+        match self
+            Option[T].Some(v) => Option[U].Some(f(v))
+            Option[T].None => Option[U].None
+
+    fn and_then[U](self, f: Fn(T) -> Option[U]) -> Option[U]
+        match self
+            Option[T].Some(v) => f(v)
+            Option[T].None => Option[U].None
+
+    fn is_some(self) -> i64
+        match self
+            Option[T].Some(_) => 1
+            Option[T].None => 0
+
+    fn is_none(self) -> i64
+        match self
+            Option[T].Some(_) => 0
+            Option[T].None => 1

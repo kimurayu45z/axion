@@ -512,8 +512,9 @@ fn compile_method_call() {
 struct Counter
     val: i64
 
-fn@[Counter] increment(n: i64) -> Counter
-    Counter #{val: self.val + n}
+impl Counter
+    fn increment(self, n: i64) -> Counter
+        Counter #{val: self.val + n}
 
 fn main() -> i64
     let c = Counter #{val: 10}
@@ -531,8 +532,9 @@ fn compile_drop_called() {
 struct Resource
     id: i64
 
-fn@[Resource] drop()
-    0
+impl Resource
+    fn drop(self)
+        0
 
 fn main() -> i64
     let r = Resource #{id: 42}
@@ -549,8 +551,9 @@ fn compile_drop_side_effect() {
 struct Droppable
     val: i64
 
-fn@[Droppable] drop()
-    println("dropped")
+impl Droppable
+    fn drop(self)
+        println("dropped")
 
 fn main()
     let d = Droppable #{val: 1}
@@ -644,13 +647,14 @@ fn main() -> i64
 fn compile_interface_basic() {
     let src = "\
 interface Doubler
-    fn @[] double() -> i64
+    fn double(self) -> i64
 
 struct Num
     value: i64
 
-fn @[Num] double() -> i64
-    self.value * 2
+impl Num
+    fn double(self) -> i64
+        self.value * 2
 
 fn apply_double[T: Doubler](x: T) -> i64
     x.double()
@@ -667,14 +671,15 @@ fn main() -> i64
 fn compile_clone_interface() {
     let src = "\
 interface Clone
-    fn @[] clone() -> Self
+    fn clone(self) -> Self
 
 struct Point
     x: i64
     y: i64
 
-fn @[Point] clone() -> Point
-    Point #{x: self.x, y: self.y}
+impl Point
+    fn clone(self) -> Point
+        Point #{x: self.x, y: self.y}
 
 fn dup[T: Clone](x: T) -> T
     x.clone()
@@ -692,13 +697,14 @@ fn main() -> i64
 fn compile_interface_with_type_param() {
     let src = "\
 interface Mapper[T]
-    fn @[] apply(x: T) -> T
+    fn apply(self, x: T) -> T
 
 struct DoubleMapper
     factor: i64
 
-fn @[DoubleMapper] apply(x: i64) -> i64
-    x * self.factor
+impl DoubleMapper
+    fn apply(self, x: i64) -> i64
+        x * self.factor
 
 fn do_map[M: Mapper[i64]](mapper: M, val: i64) -> i64
     mapper.apply(val)
@@ -715,19 +721,20 @@ fn main() -> i64
 fn compile_multiple_interface_bounds() {
     let src = "\
 interface Doubler
-    fn @[] double() -> i64
+    fn double(self) -> i64
 
 interface Clone
-    fn @[] clone() -> Self
+    fn clone(self) -> Self
 
 struct Val
     n: i64
 
-fn @[Val] double() -> i64
-    self.n * 2
+impl Val
+    fn double(self) -> i64
+        self.n * 2
 
-fn @[Val] clone() -> Val
-    Val #{n: self.n}
+    fn clone(self) -> Val
+        Val #{n: self.n}
 
 fn clone_and_double[T: Clone + Doubler](x: T) -> i64
     let y = x.clone()
@@ -768,10 +775,11 @@ enum Option[T]
     Some(value: T)
     None
 
-fn @[Option[i64]] is_some() -> i64
-    match self
-        Option[i64].Some(_) => 1
-        Option[i64].None => 0
+impl Option[i64]
+    fn is_some(self) -> i64
+        match self
+            Option[i64].Some(_) => 1
+            Option[i64].None => 0
 
 fn main() -> i64
     let x = Option[i64].Some(10)
@@ -862,8 +870,9 @@ fn compile_mut_self_field_assign() {
 struct Counter
     mut value: i64
 
-fn@[mut Counter] increment()
-    self.value = self.value + 1
+impl Counter
+    fn increment(mut self)
+        self.value = self.value + 1
 
 fn main() -> i64
     let mut c = Counter #{value: 40}
@@ -882,10 +891,11 @@ struct Range
     mut current: i64
     end: i64
 
-fn@[mut Range] next() -> i64
-    let val = self.current
-    self.current = self.current + 1
-    val
+impl Range
+    fn next(mut self) -> i64
+        let val = self.current
+        self.current = self.current + 1
+        val
 
 fn main() -> i64
     let mut r = Range #{current: 0, end: 5}
@@ -908,8 +918,9 @@ struct Point
     x: i64
     y: i64
 
-fn@[Point] sum() -> i64
-    self.x + self.y
+impl Point
+    fn sum(self) -> i64
+        self.x + self.y
 
 fn main() -> i64
     let p = Point #{x: 20, y: 22}
@@ -1002,9 +1013,7 @@ fn main() -> i64
     let b = min(a, 10)
     let c = max(b, 3)
     let opt = Option[i64].Some(c)
-    match opt
-        Option[i64].Some(v) => v
-        Option[i64].None => 0
+    opt.unwrap_or(0)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 5);
@@ -1036,7 +1045,7 @@ fn prelude_unwrap_or() {
 fn main() -> i64
     let x = Option[i64].Some(42)
     let y = Option[i64].None
-    unwrap_or[i64](x, 0) + unwrap_or[i64](y, 10)
+    x.unwrap_or(0) + y.unwrap_or(10)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 52);
@@ -1047,8 +1056,8 @@ fn prelude_map_option() {
     let src = "\
 fn main() -> i64
     let x = Option[i64].Some(21)
-    let doubled = map_option[i64, i64](x, |v: i64| v * 2)
-    unwrap_or[i64](doubled, 0)
+    let doubled = x.map[i64](|v: i64| v * 2)
+    doubled.unwrap_or(0)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 42);
@@ -1060,10 +1069,10 @@ fn prelude_result_unwrap_and_map() {
 fn main() -> i64
     let ok = Result[i64, i64].Ok(20)
     let err = Result[i64, i64].Err(99)
-    let a = unwrap_or_ok[i64, i64](ok, 0)
-    let b = unwrap_or_ok[i64, i64](err, 5)
-    let mapped = map_result[i64, i64, i64](Result[i64, i64].Ok(10), |v: i64| v + 7)
-    let c = unwrap_or_ok[i64, i64](mapped, 0)
+    let a = ok.unwrap_or(0)
+    let b = err.unwrap_or(5)
+    let mapped = Result[i64, i64].Ok(10).map[i64](|v: i64| v + 7)
+    let c = mapped.unwrap_or(0)
     a + b + c
 ";
     let result = compile_and_run_with_prelude(src);
@@ -1076,7 +1085,7 @@ fn prelude_is_some_is_none() {
 fn main() -> i64
     let s = Option[i64].Some(1)
     let n = Option[i64].None
-    is_some[i64](s) + is_none[i64](n) + is_some[i64](n) + is_none[i64](s)
+    s.is_some() + n.is_none() + n.is_some() + s.is_none()
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 2);
@@ -1088,8 +1097,122 @@ fn prelude_is_ok_is_err() {
 fn main() -> i64
     let ok = Result[i64, i64].Ok(1)
     let err = Result[i64, i64].Err(2)
-    is_ok[i64, i64](ok) + is_err[i64, i64](err) + is_ok[i64, i64](err) + is_err[i64, i64](ok)
+    ok.is_ok() + err.is_err() + err.is_ok() + ok.is_err()
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 2);
+}
+
+#[test]
+fn prelude_pow() {
+    let src = "\
+fn main() -> i64
+    pow(2, 6)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 64);
+}
+
+#[test]
+fn prelude_gcd_lcm() {
+    let src = "\
+fn main() -> i64
+    gcd(12, 8) + lcm(3, 4)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 16);
+}
+
+#[test]
+fn prelude_is_even_is_odd() {
+    let src = "\
+fn main() -> i64
+    is_even(4) + is_odd(3) + is_even(3) + is_odd(4)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 2);
+}
+
+#[test]
+fn prelude_and_then_option() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(21)
+    let r = x.and_then[i64](|v: i64| Option[i64].Some(v * 2))
+    r.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn prelude_and_then_result() {
+    let src = "\
+fn main() -> i64
+    let x = Result[i64, i64].Ok(10)
+    let r = x.and_then[i64](|v: i64| Result[i64, i64].Ok(v + 5))
+    r.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn prelude_map_err() {
+    let src = "\
+fn main() -> i64
+    let x = Result[i64, i64].Err(10)
+    let r = x.map_err[i64](|e: i64| e * 2)
+    match r
+        Result[i64, i64].Ok(_) => 0
+        Result[i64, i64].Err(e) => e
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn impl_generic_receiver() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(42)
+    let y = Option[i64].None
+    x.unwrap_or(0) + y.unwrap_or(10)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 52);
+}
+
+#[test]
+fn impl_static_method() {
+    let src = "\
+struct Counter
+    value: i64
+
+impl Counter
+    fn get_value(self) -> i64
+        self.value
+
+    fn add(self, n: i64) -> Counter
+        Counter #{value: self.value + n}
+
+fn main() -> i64
+    let c = Counter #{value: 10}
+    let c2 = c.add(32)
+    c2.get_value()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn impl_method_chain() {
+    let src = "\
+fn main() -> i64
+    let x = Option[i64].Some(21)
+    let mapped = x.map[i64](|v: i64| v * 2)
+    mapped.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
 }

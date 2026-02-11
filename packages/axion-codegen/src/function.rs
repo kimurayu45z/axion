@@ -397,15 +397,23 @@ pub fn declare_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
 
     // Clone specialized_fns to avoid borrow issues.
     let specs: Vec<_> = mono.specialized_fns.iter().map(|s| {
-        (s.mangled_name.clone(), s.fn_ty.clone())
+        (s.mangled_name.clone(), s.fn_ty.clone(), s.is_method, s.receiver_modifier.clone())
     }).collect();
 
-    for (mangled_name, fn_ty) in &specs {
+    for (mangled_name, fn_ty, is_method, receiver_modifier) in &specs {
         let Ty::Fn { params, ret } = fn_ty else { continue };
 
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
             .iter()
-            .map(|t| ty_to_llvm_metadata(ctx, t))
+            .enumerate()
+            .map(|(i, t)| {
+                if i == 0 && *is_method {
+                    if matches!(receiver_modifier, Some(ReceiverModifier::Mut) | Some(ReceiverModifier::Borrow)) {
+                        return ctx.context.ptr_type(AddressSpace::default()).into();
+                    }
+                }
+                ty_to_llvm_metadata(ctx, t)
+            })
             .collect();
 
         let fn_type = if is_void_ty(ret) {
@@ -434,10 +442,13 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             s.body.clone(),
             s.params.clone(),
             s.subst.clone(),
+            s.is_method,
+            s.receiver_modifier.clone(),
+            s.original_def_id,
         )
     }).collect();
 
-    for (mangled_name, fn_ty, body, params, subst) in &specs {
+    for (mangled_name, fn_ty, body, params, subst, is_method, receiver_modifier, original_def_id) in &specs {
         let Some(&fn_value) = ctx.mono_fn_values.get(mangled_name.as_str()) else {
             continue;
         };
@@ -459,6 +470,50 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         ctx.local_types.clear();
         ctx.heap_allocs.clear();
 
+        // Handle self parameter for methods.
+        let param_offset = if *is_method {
+            // Find the `self` DefId for this method.
+            let method_sym = ctx.resolved.symbols.iter().find(|s| s.def_id == *original_def_id);
+            let item_span = method_sym.map(|s| s.span).unwrap_or(Span::dummy());
+
+            if let Some(self_val) = fn_value.get_nth_param(0) {
+                let self_def_ids: Vec<_> = ctx.resolved.symbols.iter()
+                    .filter(|s| s.kind == SymbolKind::Param && s.name == "self")
+                    .map(|s| s.def_id)
+                    .collect();
+                let self_def_id = ctx.resolved.resolutions.iter()
+                    .filter(|&(&offset, _)| offset >= item_span.start && offset < item_span.end)
+                    .find(|(_, def_id)| self_def_ids.contains(def_id))
+                    .map(|(_, &def_id)| def_id);
+                let self_sym = self_def_id.and_then(|did| {
+                    ctx.resolved.symbols.iter().find(|s| s.def_id == did)
+                });
+                if let Some(sym) = self_sym {
+                    let pass_by_ref = matches!(receiver_modifier, Some(ReceiverModifier::Mut) | Some(ReceiverModifier::Borrow));
+                    if pass_by_ref {
+                        let ptr = self_val.into_pointer_value();
+                        let Ty::Fn { params: fn_params, .. } = fn_ty else { unreachable!() };
+                        let pointee_ty = if !fn_params.is_empty() {
+                            ty_to_llvm(ctx, &fn_params[0])
+                        } else {
+                            ctx.context.i64_type().into()
+                        };
+                        ctx.locals.insert(sym.def_id, ptr);
+                        ctx.local_types.insert(sym.def_id, pointee_ty);
+                    } else {
+                        let val_ty = self_val.get_type();
+                        let alloca = ctx.builder.build_alloca(val_ty, "self").unwrap();
+                        ctx.builder.build_store(alloca, self_val).unwrap();
+                        ctx.locals.insert(sym.def_id, alloca);
+                        ctx.local_types.insert(sym.def_id, val_ty);
+                    }
+                }
+            }
+            1u32
+        } else {
+            0u32
+        };
+
         // Alloca params as local variables.
         for (i, param) in params.iter().enumerate() {
             let param_sym = ctx
@@ -468,7 +523,7 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
                 .find(|s| s.kind == SymbolKind::Param && s.span == param.span);
 
             if let Some(sym) = param_sym {
-                let param_val = fn_value.get_nth_param(i as u32);
+                let param_val = fn_value.get_nth_param((i as u32) + param_offset);
                 if let Some(param_val) = param_val {
                     let val_ty = param_val.get_type();
                     let alloca = ctx
