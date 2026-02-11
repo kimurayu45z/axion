@@ -25,6 +25,7 @@ pub enum ItemKind {
     Use(UseDecl),
     Extern(ExternBlock),
     Test(TestDef),
+    ImplFor(ImplForDef),
 }
 
 // --- Visibility ---
@@ -337,6 +338,15 @@ pub enum TestModifier {
     Property,
     Snapshot,
     Bench,
+}
+
+// --- Impl-for definition ---
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplForDef {
+    pub interface: TypeExpr,
+    pub type_params: Vec<TypeParam>,
+    pub target_type: TypeExpr,
 }
 
 // --- Statement ---

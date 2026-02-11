@@ -29,6 +29,7 @@ fn resolve_item(ctx: &mut ResolveContext, item: &Item, root: ScopeId) {
         ItemKind::Extern(ext) => resolve_extern_block(ctx, ext, root),
         ItemKind::Test(t) => resolve_test_def(ctx, t, root),
         ItemKind::Use(_) => { /* deferred to cross-module resolution */ }
+        ItemKind::ImplFor(_) => { /* checked during type checking */ }
     }
 }
 

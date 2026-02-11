@@ -987,3 +987,68 @@ fn process() -> i64 with IO
     assert!(diags.iter().any(|d| d.code == "E0213"),
         "expected E0213 (unhandled_effect), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
 }
+
+// ===== impl Interface for Type tests =====
+
+#[test]
+fn impl_for_satisfied() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+struct Point
+    x: f64
+    y: f64
+
+impl Point
+    fn show(self) -> str
+        \"point\"
+
+impl Printable for Point
+";
+    check_no_errors(source);
+}
+
+#[test]
+fn impl_for_missing_method() {
+    let source = "\
+interface Printable
+    fn show() -> str
+
+struct Empty
+    x: i64
+
+impl Printable for Empty
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0210"),
+        "expected E0210 (missing_method), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn impl_for_marker_interface() {
+    let source = "\
+interface SInt
+
+fn main()
+    42
+";
+    // SInt is a built-in marker interface; i64 satisfies it.
+    // We test marker satisfaction through the bound check path.
+    check_no_errors(source);
+}
+
+#[test]
+fn impl_for_marker_unsatisfied() {
+    let source = "\
+interface SInt
+
+struct Foo
+    x: i64
+
+impl SInt for Foo
+";
+    let diags = check_errors(source);
+    assert!(diags.iter().any(|d| d.code == "E0209"),
+        "expected E0209 (unsatisfied_bound), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}

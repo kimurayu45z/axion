@@ -271,8 +271,25 @@ impl Parser {
             Vec::new()
         };
 
-        // Parse the target type: Option[T], Counter, etc.
-        let receiver_type = self.parse_type_expr()?;
+        // Parse the first type: could be receiver type or interface name.
+        let first_type = self.parse_type_expr()?;
+
+        // NEW: impl Interface for Type
+        if self.check(&TokenKind::For) {
+            self.advance();
+            let target_type = self.parse_type_expr()?;
+            let item_span = block_start.merge(self.prev_span());
+            return Some(vec![Item {
+                span: item_span,
+                kind: ItemKind::ImplFor(ImplForDef {
+                    interface: first_type,
+                    type_params: impl_type_params,
+                    target_type,
+                }),
+            }]);
+        }
+
+        let receiver_type = first_type;
 
         self.skip_newlines();
 

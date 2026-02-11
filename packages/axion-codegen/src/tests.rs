@@ -1140,8 +1140,8 @@ fn main() -> i64
 #[test]
 fn prelude_gcd_lcm() {
     let src = "\
-fn main() -> i64
-    gcd[i64](12, 8) + lcm[i64](3, 4)
+fn main() -> u64
+    gcd[u64](12, 8) + lcm[u64](3, 4)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 16);

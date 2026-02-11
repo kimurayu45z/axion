@@ -186,6 +186,10 @@ fn collect_item(ctx: &mut ResolveContext, item: &Item, root: ScopeId) {
         ItemKind::Test(_) => {
             // Tests are not visible as named entities.
         }
+
+        ItemKind::ImplFor(_) => {
+            // Compile-time assertion only — no symbols to register.
+        }
     }
 }
 

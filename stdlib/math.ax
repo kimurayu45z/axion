@@ -1,4 +1,4 @@
-fn abs[T: SInt](x: T) -> T
+fn abs[T: SNumber](x: T) -> T
     if x < 0
         0 - x
     else
@@ -25,7 +25,7 @@ fn clamp[T: Number](x: T, lo: T, hi: T) -> T
         else
             x
 
-fn sign[T: SInt](x: T) -> T
+fn sign[T: SNumber](x: T) -> T
     if x > 0
         1
     else
@@ -42,21 +42,21 @@ fn pow[T: Int](base: T, exp: T) -> T
         i = i + 1
     result
 
-fn gcd[T: SInt](a: T, b: T) -> T
-    let mut x = abs[T](a)
-    let mut y = abs[T](b)
+fn gcd[T: UInt](a: T, b: T) -> T
+    let mut x = a
+    let mut y = b
     while y > 0
         let t = y
         y = x % t
         x = t
     x
 
-fn lcm[T: SInt](a: T, b: T) -> T
+fn lcm[T: UInt](a: T, b: T) -> T
     let g = gcd[T](a, b)
     if g == 0
         0
     else
-        abs[T](a) / g * abs[T](b)
+        a / g * b
 
 fn is_even[T: Int](x: T) -> bool
     if x % 2 == 0

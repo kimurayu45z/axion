@@ -182,6 +182,9 @@ impl TypeEnv {
             ItemKind::Use(_) | ItemKind::Test(_) => {
                 // Use decls and tests don't need type env entries.
             }
+            ItemKind::ImplFor(_) => {
+                // Checked in type_check phase, not env building.
+            }
         }
     }
 

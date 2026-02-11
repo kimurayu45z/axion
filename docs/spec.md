@@ -337,6 +337,26 @@ interface Consumable
     fn@[move] consume() -> Data  // move 必須
 ```
 
+#### `impl Interface for Type`（コンパイル時検証）
+
+型が interface を満たすかは構造的に判定されるが、**明示的にコンパイル時検証**することもできる。Go の `var _ Interface = Type{}` に相当する機能。
+
+```
+impl Printable for Point
+```
+
+ジェネリック型の場合：
+
+```
+impl[T] Printable for Array[T]
+```
+
+`impl Interface for Type` は以下を検証する：
+- **Duck-typed interface**: 必要なメソッドがすべて存在すること
+- **Marker interface**: `interface_impls` レジストリに登録されていること
+
+不満足の場合はコンパイルエラーとなる。メソッド定義やシンボル登録は行わない（純粋なアサーション）。
+
 #### Interface 境界（静的ディスパッチ）
 
 ```
@@ -1631,6 +1651,7 @@ test property "round-trip serialization" for (user: User)
 program        = { top_level_item } ;
 top_level_item = function_def | method_def | constructor_def
                | struct_def | enum_def | interface_def
+               | impl_for_def
                | type_alias | use_decl | test_def ;
 
 // 通常の関数
@@ -1694,6 +1715,9 @@ interface_def  = ["pub"] "interface" TYPE_IDENT type_params?
                  NEWLINE INDENT { iface_method NEWLINE } DEDENT ;
 iface_method   = "fn" ["@" "[" ("mut" | "move") "]"] IDENT
                  "(" params ")" ["->" type] ;
+
+// impl Interface for Type（コンパイル時インターフェース検証）
+impl_for_def   = "impl" type_params? TYPE_IDENT [type_args] "for" type ;
 
 test_def       = "test" [test_modifier] STRING_LIT [for_clause]
                  NEWLINE INDENT body DEDENT ;

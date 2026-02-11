@@ -264,6 +264,97 @@ pub fn type_check_with_imports(
                 ctx.infer_stmts(&t.body);
                 ctx.default_int_lits();
             }
+            ItemKind::ImplFor(impl_for) => {
+                // Resolve the interface DefId by name.
+                let iface_def_id = match &impl_for.interface {
+                    TypeExpr::Named { name, .. } => {
+                        resolved.symbols.iter().find(|s| {
+                            s.name == *name && s.kind == SymbolKind::Interface
+                        }).map(|s| s.def_id)
+                    }
+                    _ => None,
+                };
+
+                // Resolve the target type by name (ImplFor items are not
+                // processed by the resolver, so resolutions won't contain
+                // span entries for them — look up symbols directly).
+                let (target_ty, target_type_name) = match &impl_for.target_type {
+                    TypeExpr::Named { name, .. } => {
+                        // Try primitive first
+                        if let Some(prim) = crate::ty::PrimTy::from_name(name) {
+                            (Ty::Prim(prim), Some(name.clone()))
+                        } else if let Some(sym) = resolved.symbols.iter().find(|s| {
+                            s.name == *name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
+                        }) {
+                            let ty = match sym.kind {
+                                SymbolKind::Struct => Ty::Struct { def_id: sym.def_id, type_args: vec![] },
+                                SymbolKind::Enum => Ty::Enum { def_id: sym.def_id, type_args: vec![] },
+                                _ => Ty::Error,
+                            };
+                            (ty, Some(name.clone()))
+                        } else {
+                            (Ty::Error, Some(name.clone()))
+                        }
+                    }
+                    _ => (Ty::Error, None),
+                };
+
+                if let Some(iface_def_id) = iface_def_id {
+                    let iface_name = resolved.symbols.iter()
+                        .find(|s| s.def_id == iface_def_id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_else(|| "?".to_string());
+
+                    let required_methods = env.interface_methods.get(&iface_def_id)
+                        .cloned().unwrap_or_default();
+
+                    if required_methods.is_empty() {
+                        // Marker interface: check interface_impls registry.
+                        if let Some(impl_tys) = env.interface_impls.get(&iface_def_id) {
+                            if !impl_tys.contains(&target_ty) {
+                                diagnostics.push(errors::unsatisfied_bound(
+                                    &target_ty,
+                                    &iface_name,
+                                    file_name,
+                                    item.span,
+                                    source,
+                                ));
+                            }
+                        }
+                    } else {
+                        // Duck-typed: check each required method exists on target type.
+                        for (method_name, _) in &required_methods {
+                            if let Some(ref tn) = target_type_name {
+                                let key = format!("{tn}.{method_name}");
+                                let has_method = resolved.symbols.iter().any(|s| {
+                                    s.name == key
+                                        && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+                                });
+                                if !has_method {
+                                    diagnostics.push(errors::missing_method(
+                                        &target_ty,
+                                        method_name,
+                                        &iface_name,
+                                        file_name,
+                                        item.span,
+                                        source,
+                                    ));
+                                    break;
+                                }
+                            } else {
+                                diagnostics.push(errors::unsatisfied_bound(
+                                    &target_ty,
+                                    &iface_name,
+                                    file_name,
+                                    item.span,
+                                    source,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
