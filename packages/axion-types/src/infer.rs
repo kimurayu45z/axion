@@ -1041,8 +1041,25 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    fn infer_for(&mut self, _pattern: &Pattern, iter: &Expr, body: &[Stmt]) -> Ty {
-        self.infer_expr(iter);
+    fn infer_for(&mut self, pattern: &Pattern, iter: &Expr, body: &[Stmt]) -> Ty {
+        let iter_ty = self.infer_expr(iter);
+        let resolved = self.unify.resolve(&iter_ty);
+
+        // Determine the element type.
+        let elem_ty = match &resolved {
+            // Case 1: FixedArray [T; N]
+            Ty::Array { elem, .. } => *elem.clone(),
+            // Case 2: Range (Ty::Error — existing behavior)
+            Ty::Error => Ty::Error,
+            // Case 3: Iter[T] — extract T from next() -> Option[T]
+            _ => self.find_iter_elem_type(&resolved).unwrap_or(Ty::Error),
+        };
+
+        // Bind pattern variables to the element type.
+        if !matches!(elem_ty, Ty::Error) {
+            self.infer_pattern_bindings(pattern, &elem_ty);
+        }
+
         self.infer_stmts(body);
         Ty::Unit
     }
@@ -1735,6 +1752,45 @@ impl<'a> InferCtx<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Check if a type implements Iter[T] by looking for a `next` method
+    /// that returns Option[T], and extract T.
+    fn find_iter_elem_type(&self, ty: &Ty) -> Option<Ty> {
+        let type_name = self.get_concrete_type_name(ty)?;
+        let method_key = format!("{}.next", type_name);
+        let method_sym = self.resolved.symbols.iter().find(|s| {
+            s.name == method_key && matches!(s.kind, SymbolKind::Method)
+        })?;
+        let method_info = self.env.defs.get(&method_sym.def_id)?;
+
+        // Get the method's return type.
+        let ret = match &method_info.ty {
+            Ty::Fn { ret, .. } => {
+                let mut resolved_ret = *ret.clone();
+                // If generic receiver, substitute type args.
+                let type_args = match ty {
+                    Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => type_args.clone(),
+                    _ => vec![],
+                };
+                if !type_args.is_empty() {
+                    let subst = self.build_method_receiver_subst(ty, method_sym, &type_args);
+                    if !subst.is_empty() {
+                        resolved_ret = substitute(&resolved_ret, &subst);
+                    }
+                }
+                resolved_ret
+            }
+            _ => return None,
+        };
+
+        // Extract T from Option[T].
+        if let Ty::Enum { type_args, .. } = &ret {
+            if type_args.len() == 1 {
+                return Some(type_args[0].clone());
+            }
+        }
+        None
     }
 
     /// Check parameter modifiers match between call-site and definition.

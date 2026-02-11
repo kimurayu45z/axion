@@ -1069,3 +1069,8 @@ fn array_builtin_first() {
 fn array_builtin_last() {
     check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    arr.last()");
 }
+
+#[test]
+fn infer_for_array() {
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in arr\n        s = s + x\n    s");
+}

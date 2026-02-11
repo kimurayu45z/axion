@@ -1,0 +1,2 @@
+pub interface Iter[T]
+    fn next(mut self) -> Option[T]

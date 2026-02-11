@@ -2740,15 +2740,14 @@ fn compile_string_interp<'ctx>(
 // For loop
 // ---------------------------------------------------------------------------
 
-/// Compile a for loop: `for i in start..end { body }`.
-/// Desugars to a while loop with a counter variable.
+/// Compile a for loop: `for i in start..end`, `for x in arr`, or `for x in iter`.
 fn compile_for<'ctx>(
     ctx: &mut CodegenCtx<'ctx>,
     pattern: &Pattern,
     iter: &Expr,
     body: &[Stmt],
 ) {
-    // Currently only supports Range iterators: `for i in start..end`.
+    // --- Branch 1: Range iterator: `for i in start..end` ---
     if let ExprKind::Range { start, end } = &iter.kind {
         let start_val = match compile_expr(ctx, start) {
             Some(v) => v,
@@ -2851,6 +2850,353 @@ fn compile_for<'ctx>(
         ctx.loop_exit_block = prev_exit;
         ctx.loop_header_block = prev_header;
         ctx.builder.position_at_end(exit_bb);
+        return;
     }
-    // Non-range for loops are not yet supported.
+
+    // --- Branch 2: FixedArray: `for x in arr` ---
+    let iter_ty = get_expr_ty(ctx, iter);
+    if let Ty::Array { ref elem, len } = iter_ty {
+        let arr_val = match compile_expr(ctx, iter) {
+            Some(v) => v,
+            None => return,
+        };
+        let arr_llvm_ty = arr_val.get_type();
+        let arr_alloca = ctx.builder.build_alloca(arr_llvm_ty, "for_arr").unwrap();
+        ctx.builder.build_store(arr_alloca, arr_val).unwrap();
+
+        let fn_val = ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let i64_ty = ctx.context.i64_type();
+        let counter_alloca = ctx.builder.build_alloca(i64_ty, "for_idx").unwrap();
+        ctx.builder
+            .build_store(counter_alloca, i64_ty.const_zero())
+            .unwrap();
+        let len_val = i64_ty.const_int(len, false);
+
+        // Element LLVM type (apply current substitution for generics).
+        let resolved_elem = if ctx.current_subst.is_empty() {
+            *elem.clone()
+        } else {
+            axion_mono::specialize::substitute(elem, &ctx.current_subst)
+        };
+        let elem_llvm_ty = ty_to_llvm(ctx, &resolved_elem);
+
+        let header_bb = ctx.context.append_basic_block(fn_val, "for_arr_hdr");
+        let body_bb = ctx.context.append_basic_block(fn_val, "for_arr_body");
+        let exit_bb = ctx.context.append_basic_block(fn_val, "for_arr_exit");
+
+        ctx.builder.build_unconditional_branch(header_bb).unwrap();
+
+        // Header: idx < len
+        ctx.builder.position_at_end(header_bb);
+        let idx = ctx
+            .builder
+            .build_load(i64_ty, counter_alloca, "idx")
+            .unwrap()
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::SLT, idx, len_val, "cond")
+            .unwrap();
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, exit_bb)
+            .unwrap();
+
+        // Body: GEP to get element, bind pattern variable.
+        ctx.builder.position_at_end(body_bb);
+        let zero = i64_ty.const_zero();
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(arr_llvm_ty, arr_alloca, &[zero, idx], "elem_ptr")
+                .unwrap()
+        };
+        let elem_val = ctx
+            .builder
+            .build_load(elem_llvm_ty, elem_ptr, "elem")
+            .unwrap();
+
+        // Bind pattern variable.
+        if let PatternKind::Ident(name) = &pattern.kind {
+            let elem_alloca = ctx.builder.build_alloca(elem_llvm_ty, name).unwrap();
+            ctx.builder.build_store(elem_alloca, elem_val).unwrap();
+            let def_id = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::LocalVar && s.span == pattern.span)
+                .map(|s| s.def_id);
+            if let Some(def_id) = def_id {
+                ctx.locals.insert(def_id, elem_alloca);
+                ctx.local_types.insert(def_id, elem_llvm_ty);
+            }
+        }
+
+        // Loop context + body + counter increment.
+        let prev_exit = ctx.loop_exit_block.take();
+        let prev_header = ctx.loop_header_block.take();
+        ctx.loop_exit_block = Some(exit_bb);
+        ctx.loop_header_block = Some(header_bb);
+
+        for stmt in body {
+            compile_stmt(ctx, stmt);
+            if ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        // idx++
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            let cur = ctx
+                .builder
+                .build_load(i64_ty, counter_alloca, "idx")
+                .unwrap()
+                .into_int_value();
+            let one = i64_ty.const_int(1, false);
+            let next = ctx.builder.build_int_add(cur, one, "next_idx").unwrap();
+            ctx.builder.build_store(counter_alloca, next).unwrap();
+            ctx.builder.build_unconditional_branch(header_bb).unwrap();
+        }
+
+        ctx.loop_exit_block = prev_exit;
+        ctx.loop_header_block = prev_header;
+        ctx.builder.position_at_end(exit_bb);
+        return;
+    }
+
+    // --- Branch 3: Iter[T]: `for x in iter_expr` ---
+    if let Some(type_name) = get_type_name_for_method_ctx(ctx, &iter_ty) {
+        let method_key = format!("{}.next", type_name);
+        let method_def_id = ctx
+            .resolved
+            .symbols
+            .iter()
+            .find(|s| {
+                s.name == method_key
+                    && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+            })
+            .map(|s| s.def_id);
+
+        if let Some(def_id) = method_def_id {
+            // Look up monomorphized or plain function value.
+            let type_args = match &iter_ty {
+                Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
+                _ => vec![],
+            };
+            let mono_fn = if !type_args.is_empty() {
+                if let Some(mono) = ctx.mono_output {
+                    mono.lookup(def_id, &type_args)
+                        .and_then(|mangled| ctx.mono_fn_values.get(mangled).copied())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let fn_value_opt = mono_fn.or_else(|| ctx.functions.get(&def_id).copied());
+
+            if let Some(fn_value) = fn_value_opt {
+                // 1. Store iterator in alloca (mut self → pass by pointer).
+                let iter_val = match compile_expr(ctx, iter) {
+                    Some(v) => v,
+                    None => return,
+                };
+                let iter_llvm_ty = iter_val.get_type();
+                let iter_alloca = ctx.builder.build_alloca(iter_llvm_ty, "for_iter").unwrap();
+                ctx.builder.build_store(iter_alloca, iter_val).unwrap();
+
+                // 2. Determine the Option[T] return type from next().
+                let method_info = ctx.type_env.defs.get(&def_id);
+                let option_ty = if let Some(info) = method_info {
+                    if let Ty::Fn { ret, .. } = &info.ty {
+                        let mut resolved_ret = *ret.clone();
+                        if !type_args.is_empty() {
+                            let subst = build_subst_map(ctx, match &iter_ty { Ty::Struct { def_id, .. } | Ty::Enum { def_id, .. } => *def_id, _ => return }, &type_args);
+                            if !subst.is_empty() {
+                                resolved_ret = axion_mono::specialize::substitute(&resolved_ret, &subst);
+                            }
+                        }
+                        // Also apply current_subst if present.
+                        if !ctx.current_subst.is_empty() {
+                            resolved_ret = axion_mono::specialize::substitute(&resolved_ret, &ctx.current_subst);
+                        }
+                        resolved_ret
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                };
+
+                let option_llvm_ty = ty_to_llvm(ctx, &option_ty);
+                let (option_def_id, option_type_args) = match &option_ty {
+                    Ty::Enum { def_id, type_args, .. } => (*def_id, type_args.clone()),
+                    _ => return,
+                };
+
+                // 3. Get Option variant info (Some=0, None=1).
+                let variants = match ctx.type_env.enum_variants.get(&option_def_id) {
+                    Some(v) => v.clone(),
+                    None => return,
+                };
+
+                // 4. Build loop structure.
+                let fn_val = ctx
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                let header_bb = ctx.context.append_basic_block(fn_val, "for_iter_hdr");
+                let body_bb = ctx.context.append_basic_block(fn_val, "for_iter_body");
+                let exit_bb = ctx.context.append_basic_block(fn_val, "for_iter_exit");
+
+                ctx.builder.build_unconditional_branch(header_bb).unwrap();
+
+                // Header: call next(mut self), check tag.
+                ctx.builder.position_at_end(header_bb);
+                let next_result = ctx
+                    .builder
+                    .build_call(fn_value, &[iter_alloca.into()], "next")
+                    .unwrap();
+                let option_val = match next_result.try_as_basic_value().left() {
+                    Some(v) => v,
+                    None => return,
+                };
+
+                let option_alloca = ctx
+                    .builder
+                    .build_alloca(option_llvm_ty, "option_tmp")
+                    .unwrap();
+                ctx.builder.build_store(option_alloca, option_val).unwrap();
+
+                let tag_ptr = ctx
+                    .builder
+                    .build_struct_gep(option_llvm_ty, option_alloca, 0, "tag_ptr")
+                    .unwrap();
+                let tag = ctx
+                    .builder
+                    .build_load(ctx.context.i8_type(), tag_ptr, "tag")
+                    .unwrap()
+                    .into_int_value();
+                let is_some = ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        ctx.context.i8_type().const_int(0, false),
+                        "is_some",
+                    )
+                    .unwrap();
+                ctx.builder
+                    .build_conditional_branch(is_some, body_bb, exit_bb)
+                    .unwrap();
+
+                // Body: extract payload from Some variant.
+                ctx.builder.position_at_end(body_bb);
+
+                // Find the Some variant's fields.
+                let some_fields = if !variants.is_empty() {
+                    variants[0].2.clone()
+                } else {
+                    vec![]
+                };
+
+                if !some_fields.is_empty() {
+                    let subst = build_subst_map(ctx, option_def_id, &option_type_args);
+                    let variant_struct_ty = variant_struct_type(ctx, &some_fields, &subst);
+
+                    let payload_ptr = ctx
+                        .builder
+                        .build_struct_gep(option_llvm_ty, option_alloca, 1, "payload_ptr")
+                        .unwrap();
+
+                    let (_, ref field_ty) = some_fields[0];
+                    let resolved_field_ty = if subst.is_empty() {
+                        field_ty.clone()
+                    } else {
+                        axion_mono::specialize::substitute(field_ty, &subst)
+                    };
+                    let field_llvm_ty = ty_to_llvm(ctx, &resolved_field_ty);
+
+                    let value_ptr = ctx
+                        .builder
+                        .build_struct_gep(variant_struct_ty, payload_ptr, 0, "value_ptr")
+                        .unwrap();
+                    let elem_val = ctx
+                        .builder
+                        .build_load(field_llvm_ty, value_ptr, "elem")
+                        .unwrap();
+
+                    // Bind pattern variable.
+                    if let PatternKind::Ident(name) = &pattern.kind {
+                        let elem_alloca =
+                            ctx.builder.build_alloca(field_llvm_ty, name).unwrap();
+                        ctx.builder.build_store(elem_alloca, elem_val).unwrap();
+                        let pat_def_id = ctx
+                            .resolved
+                            .symbols
+                            .iter()
+                            .find(|s| {
+                                s.kind == SymbolKind::LocalVar && s.span == pattern.span
+                            })
+                            .map(|s| s.def_id);
+                        if let Some(pat_def_id) = pat_def_id {
+                            ctx.locals.insert(pat_def_id, elem_alloca);
+                            ctx.local_types.insert(pat_def_id, field_llvm_ty);
+                        }
+                    }
+                }
+
+                // Loop context + body + branch to header.
+                let prev_exit = ctx.loop_exit_block.take();
+                let prev_header = ctx.loop_header_block.take();
+                ctx.loop_exit_block = Some(exit_bb);
+                ctx.loop_header_block = Some(header_bb);
+
+                for stmt in body {
+                    compile_stmt(ctx, stmt);
+                    if ctx
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_terminator()
+                        .is_some()
+                    {
+                        break;
+                    }
+                }
+
+                if ctx
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    ctx.builder.build_unconditional_branch(header_bb).unwrap();
+                }
+
+                ctx.loop_exit_block = prev_exit;
+                ctx.loop_header_block = prev_header;
+                ctx.builder.position_at_end(exit_bb);
+            }
+        }
+    }
 }

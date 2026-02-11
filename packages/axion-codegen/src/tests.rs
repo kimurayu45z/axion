@@ -1302,3 +1302,24 @@ fn array_len_in_expression() {
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 10);
 }
+
+#[test]
+fn compile_for_array() {
+    let src = "fn main() -> i64\n    let arr = [1, 2, 3, 4, 5]\n    let mut sum: i64 = 0\n    for x in arr\n        sum = sum + x\n    sum";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 15);
+}
+
+#[test]
+fn compile_for_iter_counter() {
+    let src = "struct Counter\n    mut current: i64\n    end: i64\n\nimpl Counter\n    fn next(mut self) -> Option[i64]\n        if self.current < self.end\n            let v = self.current\n            self.current = self.current + 1\n            Option[i64].Some(v)\n        else\n            Option[i64].None\n\nfn main() -> i64\n    let mut c = Counter #{current: 0, end: 5}\n    let mut sum: i64 = 0\n    for x in c\n        sum = sum + x\n    sum";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn compile_for_iter_empty() {
+    let src = "struct Counter\n    mut current: i64\n    end: i64\n\nimpl Counter\n    fn next(mut self) -> Option[i64]\n        if self.current < self.end\n            let v = self.current\n            self.current = self.current + 1\n            Option[i64].Some(v)\n        else\n            Option[i64].None\n\nfn main() -> i64\n    let mut c = Counter #{current: 5, end: 5}\n    let mut sum: i64 = 0\n    for x in c\n        sum = sum + x\n    sum";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
