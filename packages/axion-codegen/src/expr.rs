@@ -325,12 +325,17 @@ fn compile_binop<'ctx>(
     // Use the resolved DefId type if the LHS is an ident, since span-based lookup
     // may be overwritten by the parent expression's type.
     let lhs_ty = if let ExprKind::Ident(_) = &lhs.kind {
-        ctx.resolved
+        let mut ty = ctx.resolved
             .resolutions
             .get(&lhs.span.start)
             .and_then(|def_id| ctx.type_env.defs.get(def_id))
             .map(|info| info.ty.clone())
-            .unwrap_or_else(|| get_expr_ty(ctx, lhs))
+            .unwrap_or_else(|| get_expr_ty(ctx, lhs));
+        // Apply current substitution for monomorphized generic functions.
+        if !ctx.current_subst.is_empty() {
+            ty = axion_mono::specialize::substitute(&ty, &ctx.current_subst);
+        }
+        ty
     } else {
         get_expr_ty(ctx, lhs)
     };

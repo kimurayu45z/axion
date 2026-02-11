@@ -1,0 +1,9 @@
+interface Number
+
+interface SInt
+
+interface UInt
+
+interface Int
+
+interface Float

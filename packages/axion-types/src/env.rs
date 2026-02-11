@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use axion_resolve::def_id::{DefId, SymbolKind};
+use axion_resolve::symbol::Symbol;
 use axion_resolve::ResolveOutput;
 use axion_syntax::*;
 
@@ -34,6 +35,8 @@ pub struct TypeEnv {
     pub receiver_modifiers: HashMap<DefId, ReceiverModifier>,
     /// Function/Method DefId → list of effect names.
     pub fn_effects: HashMap<DefId, Vec<String>>,
+    /// Interface DefId → list of concrete types that implement it.
+    pub interface_impls: HashMap<DefId, Vec<Ty>>,
 }
 
 impl TypeEnv {
@@ -61,6 +64,41 @@ impl TypeEnv {
         }
     }
 
+    /// Register built-in interface implementations for marker interfaces.
+    /// Maps primitive types to their marker interfaces (SInt, UInt, Int, Float, Number).
+    pub fn register_builtin_impls(&mut self, symbols: &[Symbol]) {
+        use crate::ty::PrimTy;
+
+        let signed = [PrimTy::I8, PrimTy::I16, PrimTy::I32, PrimTy::I64, PrimTy::I128];
+        let unsigned = [PrimTy::U8, PrimTy::U16, PrimTy::U32, PrimTy::U64, PrimTy::U128, PrimTy::Usize];
+        let floats = [PrimTy::F16, PrimTy::F32, PrimTy::F64, PrimTy::Bf16];
+
+        for (iface_name, prims) in [
+            ("SInt", signed.as_slice()),
+            ("UInt", unsigned.as_slice()),
+            ("Float", floats.as_slice()),
+        ] {
+            if let Some(iface_sym) = symbols.iter().find(|s| s.name == iface_name && s.kind == SymbolKind::Interface) {
+                let tys: Vec<Ty> = prims.iter().map(|p| Ty::Prim(*p)).collect();
+                self.interface_impls.insert(iface_sym.def_id, tys);
+            }
+        }
+
+        // Int = SInt ∪ UInt
+        if let Some(int_sym) = symbols.iter().find(|s| s.name == "Int" && s.kind == SymbolKind::Interface) {
+            let all_int: Vec<Ty> = signed.iter().chain(unsigned.iter())
+                .map(|p| Ty::Prim(*p)).collect();
+            self.interface_impls.insert(int_sym.def_id, all_int);
+        }
+
+        // Number = Int ∪ Float = SInt ∪ UInt ∪ Float
+        if let Some(number_sym) = symbols.iter().find(|s| s.name == "Number" && s.kind == SymbolKind::Interface) {
+            let all_numeric: Vec<Ty> = signed.iter().chain(unsigned.iter()).chain(floats.iter())
+                .map(|p| Ty::Prim(*p)).collect();
+            self.interface_impls.insert(number_sym.def_id, all_numeric);
+        }
+    }
+
     /// Build the type environment from AST + resolve output.
     pub fn build(
         source_file: &SourceFile,
@@ -77,6 +115,7 @@ impl TypeEnv {
             param_modifiers: HashMap::new(),
             receiver_modifiers: HashMap::new(),
             fn_effects: HashMap::new(),
+            interface_impls: HashMap::new(),
         };
 
         let symbols = &resolved.symbols;

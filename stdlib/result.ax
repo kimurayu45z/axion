@@ -23,12 +23,12 @@ impl[T, E] Result[T, E]
             Result[T, E].Ok(v) => Result[T, F].Ok(v)
             Result[T, E].Err(e) => Result[T, F].Err(f(e))
 
-    fn is_ok(self) -> i64
+    fn is_ok(self) -> bool
         match self
-            Result[T, E].Ok(_) => 1
-            Result[T, E].Err(_) => 0
+            Result[T, E].Ok(_) => true
+            Result[T, E].Err(_) => false
 
-    fn is_err(self) -> i64
+    fn is_err(self) -> bool
         match self
-            Result[T, E].Ok(_) => 0
-            Result[T, E].Err(_) => 1
+            Result[T, E].Ok(_) => false
+            Result[T, E].Err(_) => true

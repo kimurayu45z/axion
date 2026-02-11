@@ -59,6 +59,7 @@ pub fn type_check_with_imports(
 
     // Phase 1: Build type environment from all top-level definitions.
     let mut env = TypeEnv::build(source_file, resolved, &mut unify);
+    env.register_builtin_impls(&resolved.symbols);
 
     // Inject external type info if available.
     if let Some(ext) = external {

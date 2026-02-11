@@ -999,7 +999,7 @@ fn main() -> i64
 fn prelude_min_max() {
     let src = "\
 fn main() -> i64
-    min(10, 20) + max(10, 20)
+    min[i64](10, 20) + max[i64](10, 20)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 30);
@@ -1010,8 +1010,8 @@ fn prelude_combined() {
     let src = "\
 fn main() -> i64
     let a = abs(0 - 5)
-    let b = min(a, 10)
-    let c = max(b, 3)
+    let b = min[i64](a, 10)
+    let c = max[i64](b, 3)
     let opt = Option[i64].Some(c)
     opt.unwrap_or(0)
 ";
@@ -1023,7 +1023,7 @@ fn main() -> i64
 fn prelude_clamp() {
     let src = "\
 fn main() -> i64
-    clamp(5, 0, 10) + clamp(0 - 3, 0, 10) + clamp(15, 0, 10)
+    clamp[i64](5, 0, 10) + clamp[i64](0 - 3, 0, 10) + clamp[i64](15, 0, 10)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 15);
@@ -1085,10 +1085,22 @@ fn prelude_is_some_is_none() {
 fn main() -> i64
     let s = Option[i64].Some(1)
     let n = Option[i64].None
-    s.is_some() + n.is_none() + n.is_some() + s.is_none()
+    if s.is_some() == true
+        if n.is_none() == true
+            if n.is_some() == false
+                if s.is_none() == false
+                    42
+                else
+                    1
+            else
+                2
+        else
+            3
+    else
+        4
 ";
     let result = compile_and_run_with_prelude(src);
-    assert_eq!(result.exit_code, 2);
+    assert_eq!(result.exit_code, 42);
 }
 
 #[test]
@@ -1097,10 +1109,22 @@ fn prelude_is_ok_is_err() {
 fn main() -> i64
     let ok = Result[i64, i64].Ok(1)
     let err = Result[i64, i64].Err(2)
-    ok.is_ok() + err.is_err() + err.is_ok() + ok.is_err()
+    if ok.is_ok() == true
+        if err.is_err() == true
+            if err.is_ok() == false
+                if ok.is_err() == false
+                    42
+                else
+                    1
+            else
+                2
+        else
+            3
+    else
+        4
 ";
     let result = compile_and_run_with_prelude(src);
-    assert_eq!(result.exit_code, 2);
+    assert_eq!(result.exit_code, 42);
 }
 
 #[test]
@@ -1127,10 +1151,22 @@ fn main() -> i64
 fn prelude_is_even_is_odd() {
     let src = "\
 fn main() -> i64
-    is_even(4) + is_odd(3) + is_even(3) + is_odd(4)
+    if is_even(4) == true
+        if is_odd(3) == true
+            if is_even(3) == false
+                if is_odd(4) == false
+                    42
+                else
+                    1
+            else
+                2
+        else
+            3
+    else
+        4
 ";
     let result = compile_and_run_with_prelude(src);
-    assert_eq!(result.exit_code, 2);
+    assert_eq!(result.exit_code, 42);
 }
 
 #[test]

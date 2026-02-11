@@ -1608,10 +1608,25 @@ impl<'a> InferCtx<'a> {
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "?".to_string());
 
-            let required_methods = match self.env.interface_methods.get(iface_def_id) {
-                Some(m) => m.clone(),
-                None => continue,
-            };
+            let required_methods = self.env.interface_methods.get(iface_def_id)
+                .cloned().unwrap_or_default();
+
+            if required_methods.is_empty() {
+                // Marker interface: check interface_impls registry.
+                if let Some(impl_tys) = self.env.interface_impls.get(iface_def_id) {
+                    if !impl_tys.contains(concrete_ty) {
+                        self.diagnostics.push(errors::unsatisfied_bound(
+                            concrete_ty,
+                            &iface_name,
+                            self.file_name,
+                            span,
+                            self.source,
+                        ));
+                    }
+                }
+                // If no impls registered, pass (backward compat for user-defined empty interfaces).
+                continue;
+            }
 
             // For each required method, check that the concrete type has it.
             for (method_name, _expected_fn_ty) in &required_methods {

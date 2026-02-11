@@ -4,19 +4,19 @@ fn abs(x: i64) -> i64
     else
         x
 
-fn min(a: i64, b: i64) -> i64
+fn min[T: Number](a: T, b: T) -> T
     if a < b
         a
     else
         b
 
-fn max(a: i64, b: i64) -> i64
+fn max[T: Number](a: T, b: T) -> T
     if a > b
         a
     else
         b
 
-fn clamp(x: i64, lo: i64, hi: i64) -> i64
+fn clamp[T: Number](x: T, lo: T, hi: T) -> T
     if x < lo
         lo
     else
@@ -58,14 +58,14 @@ fn lcm(a: i64, b: i64) -> i64
     else
         abs(a) / g * abs(b)
 
-fn is_even(x: i64) -> i64
+fn is_even(x: i64) -> bool
     if x % 2 == 0
-        1
+        true
     else
-        0
+        false
 
-fn is_odd(x: i64) -> i64
+fn is_odd(x: i64) -> bool
     if x % 2 == 0
-        0
+        false
     else
-        1
+        true

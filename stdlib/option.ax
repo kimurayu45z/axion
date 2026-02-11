@@ -18,12 +18,12 @@ impl[T] Option[T]
             Option[T].Some(v) => f(v)
             Option[T].None => Option[U].None
 
-    fn is_some(self) -> i64
+    fn is_some(self) -> bool
         match self
-            Option[T].Some(_) => 1
-            Option[T].None => 0
+            Option[T].Some(_) => true
+            Option[T].None => false
 
-    fn is_none(self) -> i64
+    fn is_none(self) -> bool
         match self
-            Option[T].Some(_) => 0
-            Option[T].None => 1
+            Option[T].Some(_) => false
+            Option[T].None => true
