@@ -1323,3 +1323,59 @@ fn compile_for_iter_empty() {
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 0);
 }
+
+// ===== Range as value tests =====
+
+#[test]
+fn compile_range_as_value() {
+    let src = "\
+fn main() -> i64
+    let mut sum: i64 = 0
+    let r = 0..5
+    for i in r
+        sum = sum + i
+    sum
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 10); // 0+1+2+3+4 = 10
+}
+
+// ===== Slice tests =====
+
+#[test]
+fn compile_slice_from_array() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30]
+    let s = &arr
+    s[1]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_slice_len() {
+    let src = "\
+fn main() -> i64
+    let arr = [1, 2, 3]
+    let s = &arr
+    s.len()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 3);
+}
+
+#[test]
+fn compile_for_slice() {
+    let src = "\
+fn main() -> i64
+    let arr = [1, 2, 3]
+    let mut sum: i64 = 0
+    for x in &arr
+        sum = sum + x
+    sum
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 6); // 1+2+3 = 6
+}

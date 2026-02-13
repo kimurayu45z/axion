@@ -62,13 +62,41 @@ pub fn compile_expr<'ctx>(
             compile_for(ctx, pattern, iter, body);
             None
         }
-        ExprKind::Range { .. } => None,
+        ExprKind::Range { start, end } => {
+            let start_val = compile_expr(ctx, start)?;
+            let end_val = compile_expr(ctx, end)?;
+            let range_ty = get_expr_ty(ctx, expr);
+            let llvm_ty = ty_to_llvm(ctx, &range_ty);
+            let mut struct_val = llvm_ty.into_struct_type().const_zero();
+            struct_val = ctx.builder.build_insert_value(struct_val, start_val, 0, "range_start")
+                .unwrap().into_struct_value();
+            struct_val = ctx.builder.build_insert_value(struct_val, end_val, 1, "range_end")
+                .unwrap().into_struct_value();
+            Some(struct_val.into())
+        }
         ExprKind::Closure { params, body } => compile_closure(ctx, expr, params, body),
         ExprKind::Assert { cond, message } => {
             compile_assert(ctx, cond, message.as_deref());
             None
         }
-        ExprKind::Ref(inner) => compile_expr(ctx, inner),
+        ExprKind::Ref(inner) => {
+            let inner_ty = get_expr_ty(ctx, inner);
+            if let Ty::Array { len, .. } = inner_ty {
+                // Build fat pointer { ptr, i64 } for slice
+                let arr_ptr = compile_expr_addr(ctx, inner)?;
+                let len_val = ctx.context.i64_type().const_int(len, false);
+                let slice_ty = get_expr_ty(ctx, expr);
+                let slice_llvm_ty = ty_to_llvm(ctx, &slice_ty);
+                let mut slice_val = slice_llvm_ty.into_struct_type().const_zero();
+                slice_val = ctx.builder.build_insert_value(slice_val, arr_ptr, 0, "slice_ptr")
+                    .unwrap().into_struct_value();
+                slice_val = ctx.builder.build_insert_value(slice_val, len_val, 1, "slice_len")
+                    .unwrap().into_struct_value();
+                Some(slice_val.into())
+            } else {
+                compile_expr(ctx, inner)
+            }
+        }
         ExprKind::StringInterp { parts } => compile_string_interp(ctx, parts),
         ExprKind::TypeApp { expr: inner, .. } => compile_expr(ctx, inner),
         ExprKind::ArrayLit(elems) => compile_array_lit(ctx, expr, elems),
@@ -705,6 +733,16 @@ fn compile_call<'ctx>(
                     return Some(extracted);
                 }
                 _ => {}
+            }
+        }
+        // Slice built-in method calls
+        if let Ty::Slice(_) = inner_ty {
+            if field_name == "len" {
+                let slice_val = compile_expr(ctx, inner)?;
+                let len = ctx.builder.build_extract_value(
+                    slice_val.into_struct_value(), 1, "slice_len"
+                ).unwrap();
+                return Some(len.into());
             }
         }
 
@@ -2041,6 +2079,34 @@ fn compile_index<'ctx>(
 ) -> Option<BasicValueEnum<'ctx>> {
     let index_val = compile_expr(ctx, index)?;
 
+    // Check for Slice indexing: s[i] where s is &[T]
+    // We resolve the type via DefId to avoid span collision (Index expr and arr_expr
+    // can share the same span.start).
+    let arr_ty = if let ExprKind::Ident(_) = &arr_expr.kind {
+        ctx.resolved
+            .resolutions
+            .get(&arr_expr.span.start)
+            .and_then(|def_id| {
+                ctx.local_tys.get(def_id).cloned().or_else(|| {
+                    ctx.type_env.defs.get(def_id).map(|info| info.ty.clone())
+                })
+            })
+            .unwrap_or_else(|| get_expr_ty(ctx, arr_expr))
+    } else {
+        get_expr_ty(ctx, arr_expr)
+    };
+    if let Ty::Slice(ref elem) = arr_ty {
+        let slice_val = compile_expr(ctx, arr_expr)?;
+        let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
+            .unwrap().into_pointer_value();
+        let elem_llvm_ty = ty_to_llvm(ctx, elem);
+        let idx = index_val.into_int_value();
+        let elem_ptr = unsafe {
+            ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[idx], "slice_idx").unwrap()
+        };
+        return Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "slice_elem").unwrap());
+    }
+
     // For index access, we need the alloca directly (to GEP into it).
     // Get the alloca and its LLVM type from the local variable.
     if let ExprKind::Ident(_) = &arr_expr.kind {
@@ -2853,8 +2919,117 @@ fn compile_for<'ctx>(
         return;
     }
 
-    // --- Branch 2: FixedArray: `for x in arr` ---
+    // --- Branch 1.5: Range struct variable: `for i in range_var` ---
     let iter_ty = get_expr_ty(ctx, iter);
+    if let Ty::Struct { def_id, .. } = &iter_ty {
+        let is_range = ctx.resolved.symbols.iter()
+            .any(|s| s.def_id == *def_id && s.name == "Range" && matches!(s.kind, SymbolKind::Struct));
+        if is_range {
+            let range_val = match compile_expr(ctx, iter) {
+                Some(v) => v,
+                None => return,
+            };
+            let start_val = ctx.builder.build_extract_value(range_val.into_struct_value(), 0, "range_start")
+                .unwrap();
+            let end_val = ctx.builder.build_extract_value(range_val.into_struct_value(), 1, "range_end")
+                .unwrap();
+
+            let fn_val = ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+
+            let counter_ty = start_val.get_type();
+            let counter_alloca = ctx
+                .builder
+                .build_alloca(counter_ty, "for_counter")
+                .unwrap();
+            ctx.builder.build_store(counter_alloca, start_val).unwrap();
+
+            // Bind the pattern variable to the counter.
+            if let PatternKind::Ident(_name) = &pattern.kind {
+                let def_id = ctx
+                    .resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.kind == SymbolKind::LocalVar && s.span == pattern.span)
+                    .map(|s| s.def_id);
+                if let Some(def_id) = def_id {
+                    ctx.locals.insert(def_id, counter_alloca);
+                    ctx.local_types.insert(def_id, counter_ty);
+                }
+            }
+
+            let header_bb = ctx.context.append_basic_block(fn_val, "for_header");
+            let body_bb = ctx.context.append_basic_block(fn_val, "for_body");
+            let exit_bb = ctx.context.append_basic_block(fn_val, "for_exit");
+
+            ctx.builder.build_unconditional_branch(header_bb).unwrap();
+
+            // Header: check counter < end.
+            ctx.builder.position_at_end(header_bb);
+            let current = ctx
+                .builder
+                .build_load(counter_ty, counter_alloca, "counter")
+                .unwrap()
+                .into_int_value();
+            let end_int = end_val.into_int_value();
+            let cond = ctx
+                .builder
+                .build_int_compare(IntPredicate::SLT, current, end_int, "for_cond")
+                .unwrap();
+            ctx.builder
+                .build_conditional_branch(cond, body_bb, exit_bb)
+                .unwrap();
+
+            // Body.
+            let prev_exit = ctx.loop_exit_block.take();
+            let prev_header = ctx.loop_header_block.take();
+            ctx.loop_exit_block = Some(exit_bb);
+            ctx.loop_header_block = Some(header_bb);
+
+            ctx.builder.position_at_end(body_bb);
+            for stmt in body {
+                compile_stmt(ctx, stmt);
+                if ctx
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_some()
+                {
+                    break;
+                }
+            }
+            // Increment counter.
+            if ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_none()
+            {
+                let current = ctx
+                    .builder
+                    .build_load(counter_ty, counter_alloca, "counter")
+                    .unwrap()
+                    .into_int_value();
+                let one = current.get_type().const_int(1, false);
+                let next = ctx.builder.build_int_add(current, one, "next").unwrap();
+                ctx.builder.build_store(counter_alloca, next).unwrap();
+                ctx.builder.build_unconditional_branch(header_bb).unwrap();
+            }
+
+            ctx.loop_exit_block = prev_exit;
+            ctx.loop_header_block = prev_header;
+            ctx.builder.position_at_end(exit_bb);
+            return;
+        }
+    }
+
+    // --- Branch 2: FixedArray: `for x in arr` ---
     if let Ty::Array { ref elem, len } = iter_ty {
         let arr_val = match compile_expr(ctx, iter) {
             Some(v) => v,
@@ -2912,6 +3087,129 @@ fn compile_for<'ctx>(
         let elem_ptr = unsafe {
             ctx.builder
                 .build_in_bounds_gep(arr_llvm_ty, arr_alloca, &[zero, idx], "elem_ptr")
+                .unwrap()
+        };
+        let elem_val = ctx
+            .builder
+            .build_load(elem_llvm_ty, elem_ptr, "elem")
+            .unwrap();
+
+        // Bind pattern variable.
+        if let PatternKind::Ident(name) = &pattern.kind {
+            let elem_alloca = ctx.builder.build_alloca(elem_llvm_ty, name).unwrap();
+            ctx.builder.build_store(elem_alloca, elem_val).unwrap();
+            let def_id = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::LocalVar && s.span == pattern.span)
+                .map(|s| s.def_id);
+            if let Some(def_id) = def_id {
+                ctx.locals.insert(def_id, elem_alloca);
+                ctx.local_types.insert(def_id, elem_llvm_ty);
+            }
+        }
+
+        // Loop context + body + counter increment.
+        let prev_exit = ctx.loop_exit_block.take();
+        let prev_header = ctx.loop_header_block.take();
+        ctx.loop_exit_block = Some(exit_bb);
+        ctx.loop_header_block = Some(header_bb);
+
+        for stmt in body {
+            compile_stmt(ctx, stmt);
+            if ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        // idx++
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            let cur = ctx
+                .builder
+                .build_load(i64_ty, counter_alloca, "idx")
+                .unwrap()
+                .into_int_value();
+            let one = i64_ty.const_int(1, false);
+            let next = ctx.builder.build_int_add(cur, one, "next_idx").unwrap();
+            ctx.builder.build_store(counter_alloca, next).unwrap();
+            ctx.builder.build_unconditional_branch(header_bb).unwrap();
+        }
+
+        ctx.loop_exit_block = prev_exit;
+        ctx.loop_header_block = prev_header;
+        ctx.builder.position_at_end(exit_bb);
+        return;
+    }
+
+    // --- Branch 2.5: Slice: `for x in slice` ---
+    if let Ty::Slice(ref elem) = iter_ty {
+        let slice_val = match compile_expr(ctx, iter) {
+            Some(v) => v,
+            None => return,
+        };
+        let data_ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_data")
+            .unwrap().into_pointer_value();
+        let len_val = ctx.builder.build_extract_value(slice_val.into_struct_value(), 1, "slice_len")
+            .unwrap().into_int_value();
+
+        let resolved_elem = if ctx.current_subst.is_empty() {
+            *elem.clone()
+        } else {
+            axion_mono::specialize::substitute(elem, &ctx.current_subst)
+        };
+        let elem_llvm_ty = ty_to_llvm(ctx, &resolved_elem);
+
+        let fn_val = ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let i64_ty = ctx.context.i64_type();
+        let counter_alloca = ctx.builder.build_alloca(i64_ty, "for_idx").unwrap();
+        ctx.builder
+            .build_store(counter_alloca, i64_ty.const_zero())
+            .unwrap();
+
+        let header_bb = ctx.context.append_basic_block(fn_val, "for_slice_hdr");
+        let body_bb = ctx.context.append_basic_block(fn_val, "for_slice_body");
+        let exit_bb = ctx.context.append_basic_block(fn_val, "for_slice_exit");
+
+        ctx.builder.build_unconditional_branch(header_bb).unwrap();
+
+        // Header: idx < len
+        ctx.builder.position_at_end(header_bb);
+        let idx = ctx
+            .builder
+            .build_load(i64_ty, counter_alloca, "idx")
+            .unwrap()
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::SLT, idx, len_val, "cond")
+            .unwrap();
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, exit_bb)
+            .unwrap();
+
+        // Body: GEP to get element, bind pattern variable.
+        ctx.builder.position_at_end(body_bb);
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_llvm_ty, data_ptr, &[idx], "elem_ptr")
                 .unwrap()
         };
         let elem_val = ctx

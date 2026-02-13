@@ -86,7 +86,11 @@ impl<'a> InferCtx<'a> {
             }
             ExprKind::Ref(inner) => {
                 let inner_ty = self.infer_expr(inner);
-                Ty::Ref(Box::new(inner_ty))
+                let resolved = self.unify.resolve(&inner_ty);
+                match resolved {
+                    Ty::Array { elem, .. } => Ty::Slice(elem),
+                    _ => Ty::Ref(Box::new(resolved)),
+                }
             }
             ExprKind::TypeApp { expr: inner, type_args } => {
                 self.infer_type_app(inner, type_args, expr.span)
@@ -371,6 +375,19 @@ impl<'a> InferCtx<'a> {
                     return Ty::Fn {
                         params: vec![],
                         ret: Box::new(*elem.clone()),
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        // Slice built-in methods
+        if let Ty::Slice(_) = resolved {
+            match name {
+                "len" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(Ty::Prim(PrimTy::I64)),
                     };
                 }
                 _ => {}
@@ -904,6 +921,7 @@ impl<'a> InferCtx<'a> {
 
         match &resolved_arr {
             Ty::Array { elem, .. } => *elem.clone(),
+            Ty::Slice(elem) => *elem.clone(),
             Ty::Error => Ty::Error,
             _ => {
                 self.diagnostics.push(errors::type_mismatch(
@@ -1049,9 +1067,15 @@ impl<'a> InferCtx<'a> {
         let elem_ty = match &resolved {
             // Case 1: FixedArray [T; N]
             Ty::Array { elem, .. } => *elem.clone(),
-            // Case 2: Range (Ty::Error — existing behavior)
+            // Case 2: Range[T] → T
+            Ty::Struct { type_args, .. } if self.is_range_struct(&resolved) => {
+                type_args.first().cloned().unwrap_or(Ty::Error)
+            }
+            // Case 3: Slice &[T] → T
+            Ty::Slice(elem) => *elem.clone(),
+            // Case 4: Error poison
             Ty::Error => Ty::Error,
-            // Case 3: Iter[T] — extract T from next() -> Option[T]
+            // Case 5: Iter[T] — extract T from next() -> Option[T]
             _ => self.find_iter_elem_type(&resolved).unwrap_or(Ty::Error),
         };
 
@@ -1076,8 +1100,26 @@ impl<'a> InferCtx<'a> {
                 self.source,
             ));
         }
-        // Range type itself is deferred; return Error for now.
-        Ty::Error
+        let elem_ty = self.unify.resolve(&start_ty);
+        // Look up Range struct DefId from prelude.
+        let range_def_id = self.resolved.symbols.iter()
+            .find(|s| s.name == "Range" && matches!(s.kind, SymbolKind::Struct))
+            .map(|s| s.def_id);
+        if let Some(def_id) = range_def_id {
+            Ty::Struct { def_id, type_args: vec![elem_ty] }
+        } else {
+            Ty::Error
+        }
+    }
+
+    /// Check if a type is the Range struct (by looking up the struct name).
+    fn is_range_struct(&self, ty: &Ty) -> bool {
+        if let Ty::Struct { def_id, .. } = ty {
+            self.resolved.symbols.iter()
+                .any(|s| s.def_id == *def_id && s.name == "Range" && matches!(s.kind, SymbolKind::Struct))
+        } else {
+            false
+        }
     }
 
     fn infer_closure(&mut self, params: &[ClosureParam], body: &[Stmt]) -> Ty {

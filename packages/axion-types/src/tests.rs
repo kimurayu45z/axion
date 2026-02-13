@@ -28,6 +28,22 @@ fn check_errors(source: &str) -> Vec<axion_diagnostics::Diagnostic> {
     diags
 }
 
+fn check_with_prelude(source: &str) -> (crate::TypeCheckOutput, Vec<axion_diagnostics::Diagnostic>) {
+    let (combined, _) = axion_resolve::prelude::with_prelude(source);
+    check(&combined)
+}
+
+fn check_no_errors_with_prelude(source: &str) -> crate::TypeCheckOutput {
+    let (output, diags) = check_with_prelude(source);
+    if !diags.is_empty() {
+        for d in &diags {
+            eprintln!("  [{}] {}", d.code, d.message);
+        }
+        panic!("expected no type errors, got {}", diags.len());
+    }
+    output
+}
+
 // ===== Unification tests =====
 
 #[test]
@@ -1073,4 +1089,38 @@ fn array_builtin_last() {
 #[test]
 fn infer_for_array() {
     check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in arr\n        s = s + x\n    s");
+}
+
+// ===== Range type tests =====
+
+#[test]
+fn infer_range_type() {
+    check_no_errors_with_prelude("fn main() -> i64\n    let mut s: i64 = 0\n    for i in 0..5\n        s = s + i\n    s");
+}
+
+#[test]
+fn infer_range_as_value() {
+    check_no_errors_with_prelude("fn main() -> i64\n    let r = 0..5\n    let mut s: i64 = 0\n    for i in r\n        s = s + i\n    s");
+}
+
+// ===== Slice type tests =====
+
+#[test]
+fn infer_slice_from_array() {
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = &arr\n    0");
+}
+
+#[test]
+fn infer_slice_index() {
+    check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    let s: &[i64] = &arr\n    s[1]");
+}
+
+#[test]
+fn infer_slice_len() {
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = &arr\n    s.len()");
+}
+
+#[test]
+fn infer_for_slice() {
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in &arr\n        s = s + x\n    s");
 }
