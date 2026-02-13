@@ -824,17 +824,6 @@ let process = |item: Item|
     normalized.validate()
 ```
 
-### 5.3 Pipeline Operator（パイプライン演算子）
-
-```
-// メソッドチェーンの代替 — データフローが左→右で一貫
-let result = raw_data
-    |> parse
-    |> validate
-    |> transform(default_config())
-    |> serialize
-```
-
 ---
 
 ## 6. Control Flow
@@ -1094,9 +1083,6 @@ fn conv_block[dim B, dim H, dim W](
     input: Tensor[f32][B, 3, H, W]
 ) -> Tensor[f32][B, 64, H, W]
     input
-        |> conv2d(3, 64, 3, 1)
-        |> batch_norm(64)
-        |> relu
 ```
 
 ---

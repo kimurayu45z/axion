@@ -92,7 +92,6 @@ pub enum TokenKind {
     Bang,       // !
     Arrow,      // ->
     FatArrow,   // =>
-    PipeGt,     // |>
     Question,   // ?
     DotDot,     // ..
     At,         // @

@@ -87,10 +87,7 @@ impl<'a> InferCtx<'a> {
             ExprKind::Ref(inner) => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.unify.resolve(&inner_ty);
-                match resolved {
-                    Ty::Array { elem, .. } => Ty::Slice(elem),
-                    _ => Ty::Ref(Box::new(resolved)),
-                }
+                Ty::Ref(Box::new(resolved))
             }
             ExprKind::TypeApp { expr: inner, type_args } => {
                 self.infer_type_app(inner, type_args, expr.span)
@@ -248,22 +245,6 @@ impl<'a> InferCtx<'a> {
                 self.expect_type(&rhs_ty, &Ty::Prim(PrimTy::Bool), rhs.span);
                 Ty::Prim(PrimTy::Bool)
             }
-            BinOp::Pipe => {
-                // rhs must be a function, result is rhs's return type.
-                let resolved_rhs = self.unify.resolve(&rhs_ty);
-                match &resolved_rhs {
-                    Ty::Fn { ret, .. } => *ret.clone(),
-                    Ty::Error => Ty::Error,
-                    _ => {
-                        self.diagnostics.push(errors::not_callable(
-                            self.file_name,
-                            rhs.span,
-                            self.source,
-                        ));
-                        Ty::Error
-                    }
-                }
-            }
         }
     }
 
@@ -382,12 +363,24 @@ impl<'a> InferCtx<'a> {
         }
 
         // Slice built-in methods
-        if let Ty::Slice(_) = resolved {
+        if let Ty::Slice(ref elem) = resolved {
             match name {
                 "len" => {
                     return Ty::Fn {
                         params: vec![],
                         ret: Box::new(Ty::Prim(PrimTy::I64)),
+                    };
+                }
+                "first" | "last" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(*elem.clone()),
+                    };
+                }
+                "is_empty" => {
+                    return Ty::Fn {
+                        params: vec![],
+                        ret: Box::new(Ty::Prim(PrimTy::Bool)),
                     };
                 }
                 _ => {}
@@ -897,8 +890,22 @@ impl<'a> InferCtx<'a> {
 
     fn infer_index(&mut self, arr_expr: &Expr, index: &Expr, span: Span) -> Ty {
         let arr_ty = self.infer_expr(arr_expr);
-        let index_ty = self.infer_expr(index);
         let resolved_arr = self.unify.resolve(&arr_ty);
+
+        // Slice creation via range index: arr[..], arr[1..3], arr[..3], arr[1..]
+        if matches!(index.kind, ExprKind::Range { .. }) {
+            if let ExprKind::Range { ref start, ref end } = index.kind {
+                if let Some(s) = start { self.infer_expr(s); }
+                if let Some(e) = end { self.infer_expr(e); }
+            }
+            return match &resolved_arr {
+                Ty::Array { elem, .. } => Ty::Slice(elem.clone()),
+                Ty::Slice(elem) => Ty::Slice(elem.clone()),
+                _ => Ty::Error,
+            };
+        }
+
+        let index_ty = self.infer_expr(index);
 
         // Check that index is an integer type.
         match &index_ty {
@@ -1088,27 +1095,37 @@ impl<'a> InferCtx<'a> {
         Ty::Unit
     }
 
-    fn infer_range(&mut self, start: &Expr, end: &Expr, span: Span) -> Ty {
-        let start_ty = self.infer_expr(start);
-        let end_ty = self.infer_expr(end);
-        if self.unify.unify(&start_ty, &end_ty).is_err() {
-            self.diagnostics.push(errors::type_mismatch(
-                &self.unify.resolve(&start_ty),
-                &self.unify.resolve(&end_ty),
-                self.file_name,
-                span,
-                self.source,
-            ));
-        }
-        let elem_ty = self.unify.resolve(&start_ty);
-        // Look up Range struct DefId from prelude.
-        let range_def_id = self.resolved.symbols.iter()
-            .find(|s| s.name == "Range" && matches!(s.kind, SymbolKind::Struct))
-            .map(|s| s.def_id);
-        if let Some(def_id) = range_def_id {
-            Ty::Struct { def_id, type_args: vec![elem_ty] }
-        } else {
-            Ty::Error
+    fn infer_range(&mut self, start: &Option<Box<Expr>>, end: &Option<Box<Expr>>, span: Span) -> Ty {
+        match (start, end) {
+            (Some(s), Some(e)) => {
+                let start_ty = self.infer_expr(s);
+                let end_ty = self.infer_expr(e);
+                if self.unify.unify(&start_ty, &end_ty).is_err() {
+                    self.diagnostics.push(errors::type_mismatch(
+                        &self.unify.resolve(&start_ty),
+                        &self.unify.resolve(&end_ty),
+                        self.file_name,
+                        span,
+                        self.source,
+                    ));
+                }
+                let elem_ty = self.unify.resolve(&start_ty);
+                // Look up Range struct DefId from prelude.
+                let range_def_id = self.resolved.symbols.iter()
+                    .find(|s| s.name == "Range" && matches!(s.kind, SymbolKind::Struct))
+                    .map(|s| s.def_id);
+                if let Some(def_id) = range_def_id {
+                    Ty::Struct { def_id, type_args: vec![elem_ty] }
+                } else {
+                    Ty::Error
+                }
+            }
+            _ => {
+                // Partial ranges (bare .., ..end, start..) — only valid inside Index for slicing.
+                if let Some(s) = start { self.infer_expr(s); }
+                if let Some(e) = end { self.infer_expr(e); }
+                Ty::Error
+            }
         }
     }
 

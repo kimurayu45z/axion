@@ -302,9 +302,6 @@ impl<'src> Lexer<'src> {
                 if self.peek() == Some(b'|') {
                     self.advance();
                     Some(Token { kind: TokenKind::PipePipe, span: Span::new(start as u32, self.pos as u32) })
-                } else if self.peek() == Some(b'>') {
-                    self.advance();
-                    Some(Token { kind: TokenKind::PipeGt, span: Span::new(start as u32, self.pos as u32) })
                 } else {
                     Some(Token { kind: TokenKind::Pipe, span: Span::new(start as u32, self.pos as u32) })
                 }
@@ -742,7 +739,6 @@ impl<'src> Lexer<'src> {
                 | TokenKind::GtEq
                 | TokenKind::AmpAmp
                 | TokenKind::PipePipe
-                | TokenKind::PipeGt
                 | TokenKind::Arrow
                 | TokenKind::FatArrow
                 | TokenKind::Dot
@@ -867,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_operators() {
-        let kinds = token_kinds("+ - -> => == != |> ?");
+        let kinds = token_kinds("+ - -> => == != ?");
         assert_eq!(
             kinds,
             vec![
@@ -877,7 +873,6 @@ mod tests {
                 TokenKind::FatArrow,
                 TokenKind::EqEq,
                 TokenKind::BangEq,
-                TokenKind::PipeGt,
                 TokenKind::Question,
                 TokenKind::Eof,
             ]

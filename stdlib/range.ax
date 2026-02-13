@@ -1,3 +1,14 @@
 pub struct Range[T]
-    start: T
+    mut start: T
     end: T
+
+impl Range[i64]
+    fn next(mut self) -> Option[i64]
+        if self.start < self.end
+            let v = self.start
+            self.start = self.start + 1
+            Option[i64].Some(v)
+        else
+            Option[i64].None
+
+impl Iter for Range

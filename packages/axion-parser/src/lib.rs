@@ -1119,26 +1119,6 @@ impl Parser {
         Some(left)
     }
 
-    fn parse_pipe_expr(&mut self) -> Option<Expr> {
-        let mut left = self.parse_additive_expr()?;
-
-        while self.check(&TokenKind::PipeGt) {
-            self.advance();
-            let right = self.parse_additive_expr()?;
-            let span = left.span.merge(right.span);
-            left = Expr {
-                kind: ExprKind::BinOp {
-                    op: BinOp::Pipe,
-                    lhs: Box::new(left),
-                    rhs: Box::new(right),
-                },
-                span,
-            };
-        }
-
-        Some(left)
-    }
-
     fn parse_additive_expr(&mut self) -> Option<Expr> {
         let mut left = self.parse_multiplicative_expr()?;
 
@@ -2187,22 +2167,47 @@ impl Parser {
     // --- Range expression ---
 
     fn parse_range_expr(&mut self) -> Option<Expr> {
-        let mut left = self.parse_pipe_expr()?;
+        // Bare `..` or `..end` (no start)
+        if self.check(&TokenKind::DotDot) {
+            let start_span = self.current_span();
+            self.advance();
+            let end = if self.can_start_expr() {
+                Some(Box::new(self.parse_additive_expr()?))
+            } else {
+                None
+            };
+            let end_span = end.as_ref().map(|e| e.span).unwrap_or(self.prev_span());
+            return Some(Expr {
+                kind: ExprKind::Range { start: None, end },
+                span: start_span.merge(end_span),
+            });
+        }
 
+        let mut left = self.parse_additive_expr()?;
         if self.check(&TokenKind::DotDot) {
             self.advance();
-            let right = self.parse_pipe_expr()?;
-            let span = left.span.merge(right.span);
+            let end = if self.can_start_expr() {
+                Some(Box::new(self.parse_additive_expr()?))
+            } else {
+                None
+            };
+            let span = left.span.merge(end.as_ref().map(|e| e.span).unwrap_or(self.prev_span()));
             left = Expr {
                 kind: ExprKind::Range {
-                    start: Box::new(left),
-                    end: Box::new(right),
+                    start: Some(Box::new(left)),
+                    end,
                 },
                 span,
             };
         }
-
         Some(left)
+    }
+
+    fn can_start_expr(&self) -> bool {
+        !matches!(self.peek_kind(), Some(
+            TokenKind::RBracket | TokenKind::RParen | TokenKind::Comma
+            | TokenKind::Newline | TokenKind::Dedent | TokenKind::Eof
+        ) | None)
     }
 
     // --- Closure ---

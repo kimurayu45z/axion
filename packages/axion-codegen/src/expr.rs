@@ -63,16 +63,21 @@ pub fn compile_expr<'ctx>(
             None
         }
         ExprKind::Range { start, end } => {
-            let start_val = compile_expr(ctx, start)?;
-            let end_val = compile_expr(ctx, end)?;
-            let range_ty = get_expr_ty(ctx, expr);
-            let llvm_ty = ty_to_llvm(ctx, &range_ty);
-            let mut struct_val = llvm_ty.into_struct_type().const_zero();
-            struct_val = ctx.builder.build_insert_value(struct_val, start_val, 0, "range_start")
-                .unwrap().into_struct_value();
-            struct_val = ctx.builder.build_insert_value(struct_val, end_val, 1, "range_end")
-                .unwrap().into_struct_value();
-            Some(struct_val.into())
+            match (start, end) {
+                (Some(s), Some(e)) => {
+                    let start_val = compile_expr(ctx, s)?;
+                    let end_val = compile_expr(ctx, e)?;
+                    let range_ty = get_expr_ty(ctx, expr);
+                    let llvm_ty = ty_to_llvm(ctx, &range_ty);
+                    let mut struct_val = llvm_ty.into_struct_type().const_zero();
+                    struct_val = ctx.builder.build_insert_value(struct_val, start_val, 0, "range_start")
+                        .unwrap().into_struct_value();
+                    struct_val = ctx.builder.build_insert_value(struct_val, end_val, 1, "range_end")
+                        .unwrap().into_struct_value();
+                    Some(struct_val.into())
+                }
+                _ => None, // Partial ranges only valid inside Index
+            }
         }
         ExprKind::Closure { params, body } => compile_closure(ctx, expr, params, body),
         ExprKind::Assert { cond, message } => {
@@ -80,22 +85,7 @@ pub fn compile_expr<'ctx>(
             None
         }
         ExprKind::Ref(inner) => {
-            let inner_ty = get_expr_ty(ctx, inner);
-            if let Ty::Array { len, .. } = inner_ty {
-                // Build fat pointer { ptr, i64 } for slice
-                let arr_ptr = compile_expr_addr(ctx, inner)?;
-                let len_val = ctx.context.i64_type().const_int(len, false);
-                let slice_ty = get_expr_ty(ctx, expr);
-                let slice_llvm_ty = ty_to_llvm(ctx, &slice_ty);
-                let mut slice_val = slice_llvm_ty.into_struct_type().const_zero();
-                slice_val = ctx.builder.build_insert_value(slice_val, arr_ptr, 0, "slice_ptr")
-                    .unwrap().into_struct_value();
-                slice_val = ctx.builder.build_insert_value(slice_val, len_val, 1, "slice_len")
-                    .unwrap().into_struct_value();
-                Some(slice_val.into())
-            } else {
-                compile_expr(ctx, inner)
-            }
+            compile_expr(ctx, inner)
         }
         ExprKind::StringInterp { parts } => compile_string_interp(ctx, parts),
         ExprKind::TypeApp { expr: inner, .. } => compile_expr(ctx, inner),
@@ -524,11 +514,6 @@ fn compile_int_binop<'ctx>(
                 .unwrap()
                 .into(),
         ),
-        BinOp::Pipe => {
-            // Pipe operator: `x |> f` = `f(x)` — not easily done at IR level,
-            // should be desugared before codegen. Fall back to returning lhs.
-            Some(lhs)
-        }
     }
 }
 
@@ -736,13 +721,49 @@ fn compile_call<'ctx>(
             }
         }
         // Slice built-in method calls
-        if let Ty::Slice(_) = inner_ty {
-            if field_name == "len" {
-                let slice_val = compile_expr(ctx, inner)?;
-                let len = ctx.builder.build_extract_value(
-                    slice_val.into_struct_value(), 1, "slice_len"
-                ).unwrap();
-                return Some(len.into());
+        if let Ty::Slice(ref elem) = inner_ty {
+            match field_name.as_str() {
+                "len" => {
+                    let slice_val = compile_expr(ctx, inner)?;
+                    let len = ctx.builder.build_extract_value(
+                        slice_val.into_struct_value(), 1, "slice_len"
+                    ).unwrap();
+                    return Some(len.into());
+                }
+                "first" => {
+                    let slice_val = compile_expr(ctx, inner)?;
+                    let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
+                        .unwrap().into_pointer_value();
+                    let elem_llvm_ty = ty_to_llvm(ctx, elem);
+                    let zero = ctx.context.i64_type().const_zero();
+                    let elem_ptr = unsafe {
+                        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[zero], "first_ptr").unwrap()
+                    };
+                    return Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "first").unwrap());
+                }
+                "last" => {
+                    let slice_val = compile_expr(ctx, inner)?;
+                    let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
+                        .unwrap().into_pointer_value();
+                    let len = ctx.builder.build_extract_value(slice_val.into_struct_value(), 1, "slice_len")
+                        .unwrap().into_int_value();
+                    let elem_llvm_ty = ty_to_llvm(ctx, elem);
+                    let one = ctx.context.i64_type().const_int(1, false);
+                    let last_idx = ctx.builder.build_int_sub(len, one, "last_idx").unwrap();
+                    let elem_ptr = unsafe {
+                        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[last_idx], "last_ptr").unwrap()
+                    };
+                    return Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "last").unwrap());
+                }
+                "is_empty" => {
+                    let slice_val = compile_expr(ctx, inner)?;
+                    let len = ctx.builder.build_extract_value(slice_val.into_struct_value(), 1, "slice_len")
+                        .unwrap().into_int_value();
+                    let zero = ctx.context.i64_type().const_zero();
+                    let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
+                    return Some(cmp.into());
+                }
+                _ => {}
             }
         }
 
@@ -1572,8 +1593,8 @@ fn collect_captures_expr<'ctx>(
             }
         }
         ExprKind::Range { start, end } => {
-            collect_captures_expr(ctx, start, closure_param_ids, captures, seen);
-            collect_captures_expr(ctx, end, closure_param_ids, captures, seen);
+            if let Some(s) = start { collect_captures_expr(ctx, s, closure_param_ids, captures, seen); }
+            if let Some(e) = end { collect_captures_expr(ctx, e, closure_param_ids, captures, seen); }
         }
         ExprKind::StructLit { fields, .. } => {
             for f in fields {
@@ -2071,18 +2092,8 @@ fn compile_array_lit<'ctx>(
     Some(arr_val.into())
 }
 
-fn compile_index<'ctx>(
-    ctx: &mut CodegenCtx<'ctx>,
-    _expr: &Expr,
-    arr_expr: &Expr,
-    index: &Expr,
-) -> Option<BasicValueEnum<'ctx>> {
-    let index_val = compile_expr(ctx, index)?;
-
-    // Check for Slice indexing: s[i] where s is &[T]
-    // We resolve the type via DefId to avoid span collision (Index expr and arr_expr
-    // can share the same span.start).
-    let arr_ty = if let ExprKind::Ident(_) = &arr_expr.kind {
+pub fn resolve_arr_ty<'ctx>(ctx: &CodegenCtx<'ctx>, arr_expr: &Expr) -> Ty {
+    if let ExprKind::Ident(_) = &arr_expr.kind {
         ctx.resolved
             .resolutions
             .get(&arr_expr.span.start)
@@ -2094,7 +2105,114 @@ fn compile_index<'ctx>(
             .unwrap_or_else(|| get_expr_ty(ctx, arr_expr))
     } else {
         get_expr_ty(ctx, arr_expr)
-    };
+    }
+}
+
+fn compile_index<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    whole_expr: &Expr,
+    arr_expr: &Expr,
+    index: &Expr,
+) -> Option<BasicValueEnum<'ctx>> {
+    // Check if index is a Range → slice creation
+    if let ExprKind::Range { ref start, ref end } = index.kind {
+        let arr_ty = resolve_arr_ty(ctx, arr_expr);
+        return match &arr_ty {
+            Ty::Array { elem, len } => {
+                let arr_ptr = compile_expr_addr(ctx, arr_expr)?;
+                let elem_llvm_ty = ty_to_llvm(ctx, elem);
+                let i64_ty = ctx.context.i64_type();
+                let (data_ptr, slice_len) = match (start, end) {
+                    (None, None) => {
+                        // arr[..] → full slice
+                        let zero = i64_ty.const_zero();
+                        let gep = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, arr_ptr, &[zero], "slice_base").unwrap()
+                        };
+                        (gep, i64_ty.const_int(*len, false))
+                    }
+                    (Some(s), Some(e)) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, arr_ptr, &[s_val], "slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(e_val, s_val, "slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                    (None, Some(e)) => {
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        let zero = i64_ty.const_zero();
+                        let gep = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, arr_ptr, &[zero], "slice_base").unwrap()
+                        };
+                        (gep, e_val)
+                    }
+                    (Some(s), None) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let full_len = i64_ty.const_int(*len, false);
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, arr_ptr, &[s_val], "slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(full_len, s_val, "slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                };
+                // Build fat pointer { ptr, i64 }
+                let slice_ty = get_expr_ty(ctx, whole_expr);
+                let slice_llvm_ty = ty_to_llvm(ctx, &slice_ty);
+                let mut sv = slice_llvm_ty.into_struct_type().const_zero();
+                sv = ctx.builder.build_insert_value(sv, data_ptr, 0, "sp").unwrap().into_struct_value();
+                sv = ctx.builder.build_insert_value(sv, slice_len, 1, "sl").unwrap().into_struct_value();
+                Some(sv.into())
+            }
+            Ty::Slice(elem) => {
+                // Sub-slice of slice
+                let slice_val = compile_expr(ctx, arr_expr)?;
+                let base_ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
+                    .unwrap().into_pointer_value();
+                let base_len = ctx.builder.build_extract_value(slice_val.into_struct_value(), 1, "slice_len")
+                    .unwrap().into_int_value();
+                let elem_llvm_ty = ty_to_llvm(ctx, elem);
+                let (data_ptr, slice_len) = match (start, end) {
+                    (None, None) => (base_ptr, base_len),
+                    (Some(s), Some(e)) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, base_ptr, &[s_val], "slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(e_val, s_val, "slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                    (None, Some(e)) => {
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        (base_ptr, e_val)
+                    }
+                    (Some(s), None) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, base_ptr, &[s_val], "slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(base_len, s_val, "slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                };
+                let slice_ty = get_expr_ty(ctx, whole_expr);
+                let slice_llvm_ty = ty_to_llvm(ctx, &slice_ty);
+                let mut sv = slice_llvm_ty.into_struct_type().const_zero();
+                sv = ctx.builder.build_insert_value(sv, data_ptr, 0, "sp").unwrap().into_struct_value();
+                sv = ctx.builder.build_insert_value(sv, slice_len, 1, "sl").unwrap().into_struct_value();
+                Some(sv.into())
+            }
+            _ => None,
+        };
+    }
+
+    let index_val = compile_expr(ctx, index)?;
+
+    // Check for Slice indexing: s[i] where s is &[T]
+    let arr_ty = resolve_arr_ty(ctx, arr_expr);
     if let Ty::Slice(ref elem) = arr_ty {
         let slice_val = compile_expr(ctx, arr_expr)?;
         let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
@@ -2814,7 +2932,7 @@ fn compile_for<'ctx>(
     body: &[Stmt],
 ) {
     // --- Branch 1: Range iterator: `for i in start..end` ---
-    if let ExprKind::Range { start, end } = &iter.kind {
+    if let ExprKind::Range { start: Some(start), end: Some(end) } = &iter.kind {
         let start_val = match compile_expr(ctx, start) {
             Some(v) => v,
             None => return,

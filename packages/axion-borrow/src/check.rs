@@ -275,8 +275,8 @@ impl<'a> BorrowCtx<'a> {
                 self.check_stmts(body);
             }
             ExprKind::Range { start, end } => {
-                self.check_expr(start);
-                self.check_expr(end);
+                if let Some(s) = start { self.check_expr(s); }
+                if let Some(e) = end { self.check_expr(e); }
             }
             ExprKind::Closure { body, .. } => {
                 for stmt in body {

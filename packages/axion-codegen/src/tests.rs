@@ -1347,7 +1347,7 @@ fn compile_slice_from_array() {
     let src = "\
 fn main() -> i64
     let arr = [10, 20, 30]
-    let s = &arr
+    let s = arr[..]
     s[1]
 ";
     let result = compile_and_run(src);
@@ -1359,7 +1359,7 @@ fn compile_slice_len() {
     let src = "\
 fn main() -> i64
     let arr = [1, 2, 3]
-    let s = &arr
+    let s = arr[..]
     s.len()
 ";
     let result = compile_and_run(src);
@@ -1372,10 +1372,127 @@ fn compile_for_slice() {
 fn main() -> i64
     let arr = [1, 2, 3]
     let mut sum: i64 = 0
-    for x in &arr
+    for x in arr[..]
         sum = sum + x
     sum
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 6); // 1+2+3 = 6
+}
+
+#[test]
+fn compile_sub_slice() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30, 40]
+    let s = arr[1..3]
+    s[0]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_slice_range_end() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30, 40]
+    let s = arr[..2]
+    s.len()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 2);
+}
+
+#[test]
+fn compile_slice_range_start() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30, 40]
+    let s = arr[2..]
+    s[0]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn compile_slice_first() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30]
+    let s = arr[..]
+    s.first()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn compile_slice_last() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30]
+    let s = arr[..]
+    s.last()
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn compile_slice_is_empty() {
+    let src = "\
+fn main() -> i64
+    let arr = [10, 20, 30]
+    let s = arr[..]
+    if s.is_empty()
+        1
+    else
+        0
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 0); // not empty
+}
+
+#[test]
+fn compile_slice_as_param() {
+    let src = "\
+fn sum_slice(s: &[i64]) -> i64
+    let mut sum: i64 = 0
+    for x in s
+        sum = sum + x
+    sum
+
+fn main() -> i64
+    let arr = [1, 2, 3, 4]
+    sum_slice(arr[..])
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10); // 1+2+3+4 = 10
+}
+
+#[test]
+fn compile_array_index_assign() {
+    let src = "\
+fn main() -> i64
+    let mut arr = [1, 2, 3]
+    arr[0] = 10
+    arr[0]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 10);
+}
+
+#[test]
+fn compile_slice_mut_assign() {
+    let src = "\
+fn main() -> i64
+    let mut arr = [1, 2, 3]
+    let s = arr[..]
+    s[1] = 99
+    arr[1]
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 99);
 }

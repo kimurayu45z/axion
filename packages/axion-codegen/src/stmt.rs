@@ -4,7 +4,7 @@ use axion_syntax::*;
 use inkwell::values::BasicValueEnum;
 
 use crate::context::CodegenCtx;
-use crate::expr::{compile_expr, compile_expr_addr, get_obj_llvm_ty};
+use crate::expr::{compile_expr, compile_expr_addr, get_obj_llvm_ty, resolve_arr_ty};
 use crate::function::emit_cleanup;
 use crate::layout::{ty_to_llvm, build_subst_map, variant_struct_type};
 
@@ -142,6 +142,43 @@ fn compile_assign<'ctx>(ctx: &mut CodegenCtx<'ctx>, target: &Expr, value: &Expr)
                             .unwrap();
                         ctx.builder.build_store(gep, val).unwrap();
                     }
+                }
+            }
+        }
+        ExprKind::Index { expr: arr_expr, index } => {
+            if let Some(val) = val {
+                let arr_ty = resolve_arr_ty(ctx, arr_expr);
+                match &arr_ty {
+                    Ty::Array { .. } => {
+                        // FixedArray: GEP(arr_alloca, [0, idx]) → store
+                        let arr_ptr = compile_expr_addr(ctx, arr_expr);
+                        let idx = compile_expr(ctx, index);
+                        if let (Some(arr_ptr), Some(idx)) = (arr_ptr, idx) {
+                            let arr_llvm_ty = get_obj_llvm_ty(ctx, arr_expr);
+                            let zero = ctx.context.i64_type().const_zero();
+                            let gep = unsafe {
+                                ctx.builder
+                                    .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, idx.into_int_value()], "arr_assign")
+                                    .unwrap()
+                            };
+                            ctx.builder.build_store(gep, val).unwrap();
+                        }
+                    }
+                    Ty::Slice(elem) => {
+                        // Slice: extract ptr, GEP(ptr, [idx]) → store
+                        let slice_val = compile_expr(ctx, arr_expr);
+                        let idx = compile_expr(ctx, index);
+                        if let (Some(slice_val), Some(idx)) = (slice_val, idx) {
+                            let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
+                                .unwrap().into_pointer_value();
+                            let elem_llvm_ty = ty_to_llvm(ctx, elem);
+                            let elem_ptr = unsafe {
+                                ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[idx.into_int_value()], "slice_assign").unwrap()
+                            };
+                            ctx.builder.build_store(elem_ptr, val).unwrap();
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

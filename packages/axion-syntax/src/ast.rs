@@ -485,10 +485,10 @@ pub enum ExprKind {
         iter: Box<Expr>,
         body: Vec<Stmt>,
     },
-    /// Range expression: `a..b`
+    /// Range expression: `a..b`, `a..`, `..b`, `..`
     Range {
-        start: Box<Expr>,
-        end: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
     },
     /// Closure: `|params| body`
     Closure {
@@ -579,7 +579,6 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
-    Pipe, // |>
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

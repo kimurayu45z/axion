@@ -261,8 +261,8 @@ fn collect_from_expr(
             }
         }
         ExprKind::Range { start, end } => {
-            collect_from_expr(start, resolved, type_check, result, seen);
-            collect_from_expr(end, resolved, type_check, result, seen);
+            if let Some(s) = start { collect_from_expr(s, resolved, type_check, result, seen); }
+            if let Some(e) = end { collect_from_expr(e, resolved, type_check, result, seen); }
         }
         ExprKind::StringInterp { parts } => {
             for part in parts {

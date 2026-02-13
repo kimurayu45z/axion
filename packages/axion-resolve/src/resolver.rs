@@ -511,8 +511,8 @@ fn resolve_expr(ctx: &mut ResolveContext, expr: &Expr, scope: ScopeId) {
         }
 
         ExprKind::Range { start, end } => {
-            resolve_expr(ctx, start, scope);
-            resolve_expr(ctx, end, scope);
+            if let Some(s) = start { resolve_expr(ctx, s, scope); }
+            if let Some(e) = end { resolve_expr(ctx, e, scope); }
         }
 
         ExprKind::Closure { params, body } => {

@@ -1107,20 +1107,20 @@ fn infer_range_as_value() {
 
 #[test]
 fn infer_slice_from_array() {
-    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = &arr\n    0");
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = arr[..]\n    0");
 }
 
 #[test]
 fn infer_slice_index() {
-    check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    let s: &[i64] = &arr\n    s[1]");
+    check_no_errors("fn main() -> i64\n    let arr = [10, 20, 30]\n    let s: &[i64] = arr[..]\n    s[1]");
 }
 
 #[test]
 fn infer_slice_len() {
-    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = &arr\n    s.len()");
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let s: &[i64] = arr[..]\n    s.len()");
 }
 
 #[test]
 fn infer_for_slice() {
-    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in &arr\n        s = s + x\n    s");
+    check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in arr[..]\n        s = s + x\n    s");
 }
