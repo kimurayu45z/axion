@@ -690,6 +690,21 @@ fn compile_call<'ctx>(
                 return compile_enum_data_variant(ctx, *def_id, func, args);
             }
         }
+        // String intrinsic methods
+        if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
+            if type_name == "String" {
+                match field_name.as_str() {
+                    "new" if is_type_access => return compile_string_new(ctx),
+                    "from" if is_type_access => return compile_string_from(ctx, args),
+                    "len" => return compile_string_len(ctx, inner),
+                    "is_empty" => return compile_string_is_empty(ctx, inner),
+                    "push" => return compile_string_push(ctx, inner, args),
+                    "as_str" => return compile_string_as_str(ctx, inner),
+                    _ => {}
+                }
+            }
+        }
+
         // FixedArray built-in method calls
         if let Ty::Array { elem: _, len } = inner_ty {
             match field_name.as_str() {
@@ -1696,6 +1711,17 @@ fn compile_println<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
                 build_printf_call(ctx, "%c\n", &[val.into()]);
             }
         }
+        Ty::Struct { def_id, .. } => {
+            let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
+            if name == Some("String") {
+                if let Some(val) = compile_expr(ctx, &arg.expr) {
+                    let sv = val.into_struct_value();
+                    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap();
+                    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap();
+                    build_printf_call(ctx, "%.*s\n", &[len.into(), ptr.into()]);
+                }
+            }
+        }
         _ => {
             // Default: try as i64.
             if let Some(val) = compile_expr(ctx, &arg.expr) {
@@ -1759,6 +1785,17 @@ fn compile_print<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
         Ty::Prim(PrimTy::F64) | Ty::Prim(PrimTy::F32) => {
             if let Some(val) = compile_expr(ctx, &arg.expr) {
                 build_printf_call(ctx, "%f", &[val.into()]);
+            }
+        }
+        Ty::Struct { def_id, .. } => {
+            let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
+            if name == Some("String") {
+                if let Some(val) = compile_expr(ctx, &arg.expr) {
+                    let sv = val.into_struct_value();
+                    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap();
+                    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap();
+                    build_printf_call(ctx, "%.*s", &[len.into(), ptr.into()]);
+                }
             }
         }
         _ => {
@@ -2758,6 +2795,158 @@ fn compile_assert<'ctx>(
 }
 
 // ---------------------------------------------------------------------------
+// String intrinsic methods
+// ---------------------------------------------------------------------------
+
+/// Compile `String.new()` → `{ null_ptr, 0, 0 }`
+fn compile_string_new<'ctx>(ctx: &CodegenCtx<'ctx>) -> Option<BasicValueEnum<'ctx>> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+    let null = ptr_ty.const_null();
+    let zero = i64_ty.const_zero();
+    let mut sv = struct_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, null, 0, "str_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, zero, 1, "str_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, zero, 2, "str_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Compile `String.from(s)` → malloc + memcpy
+fn compile_string_from<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let malloc = ctx.module.get_function("malloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    let src_val = compile_expr(ctx, &args[0].expr)?;
+    let src_struct = src_val.into_struct_value();
+    let src_ptr = ctx.builder.build_extract_value(src_struct, 0, "src_ptr").unwrap();
+    let src_len = ctx.builder.build_extract_value(src_struct, 1, "src_len").unwrap();
+
+    // malloc(len)
+    let buf = ctx.builder.build_call(malloc, &[src_len.into()], "buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+
+    // memcpy(buf, src_ptr, len)
+    ctx.builder.build_call(memcpy, &[buf.into(), src_ptr.into(), src_len.into()], "").unwrap();
+
+    // Build { buf, len, len }
+    let mut sv = struct_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, buf, 0, "str_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, src_len, 1, "str_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, src_len, 2, "str_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Compile `s.len()` → extract field 1
+fn compile_string_len<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    Some(ctx.builder.build_extract_value(sv, 1, "str_len").unwrap().into())
+}
+
+/// Compile `s.is_empty()` → field 1 == 0
+fn compile_string_is_empty<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap().into_int_value();
+    let zero = ctx.context.i64_type().const_zero();
+    let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
+    Some(cmp.into())
+}
+
+/// Compile `s.push(arg)` — mutates String in-place via pointer.
+fn compile_string_push<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let realloc = ctx.module.get_function("realloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    // Get pointer to String struct
+    let string_ptr = compile_expr_addr(ctx, inner)?;
+
+    // Load current ptr, len, cap via GEP
+    let ptr_field = ctx.builder.build_struct_gep(string_ty, string_ptr, 0, "ptr_field").unwrap();
+    let len_field = ctx.builder.build_struct_gep(string_ty, string_ptr, 1, "len_field").unwrap();
+    let cap_field = ctx.builder.build_struct_gep(string_ty, string_ptr, 2, "cap_field").unwrap();
+
+    let cur_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "cur_ptr").unwrap().into_pointer_value();
+    let cur_len = ctx.builder.build_load(i64_ty, len_field, "cur_len").unwrap().into_int_value();
+    let cur_cap = ctx.builder.build_load(i64_ty, cap_field, "cur_cap").unwrap().into_int_value();
+
+    // Get source str (arg)
+    let src_val = compile_expr(ctx, &args[0].expr)?;
+    let src_struct = src_val.into_struct_value();
+    let src_ptr = ctx.builder.build_extract_value(src_struct, 0, "src_ptr").unwrap().into_pointer_value();
+    let src_len = ctx.builder.build_extract_value(src_struct, 1, "src_len").unwrap().into_int_value();
+
+    // new_len = cur_len + src_len
+    let new_len = ctx.builder.build_int_add(cur_len, src_len, "new_len").unwrap();
+
+    // if new_len > cur_cap → grow
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    let grow_bb = ctx.context.append_basic_block(fn_val, "push_grow");
+    let copy_bb = ctx.context.append_basic_block(fn_val, "push_copy");
+
+    let needs_grow = ctx.builder.build_int_compare(IntPredicate::UGT, new_len, cur_cap, "needs_grow").unwrap();
+    ctx.builder.build_conditional_branch(needs_grow, grow_bb, copy_bb).unwrap();
+
+    // grow block
+    ctx.builder.position_at_end(grow_bb);
+    // new_cap = max(new_len, cap * 2)
+    let cap_doubled = ctx.builder.build_int_mul(cur_cap, i64_ty.const_int(2, false), "cap_x2").unwrap();
+    let use_doubled = ctx.builder.build_int_compare(IntPredicate::UGT, cap_doubled, new_len, "use_doubled").unwrap();
+    let new_cap = ctx.builder.build_select(use_doubled, cap_doubled, new_len, "new_cap").unwrap().into_int_value();
+    // realloc(ptr, new_cap)
+    let new_buf = ctx.builder.build_call(realloc, &[cur_ptr.into(), new_cap.into()], "new_buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+    // store new ptr and cap
+    ctx.builder.build_store(ptr_field, new_buf).unwrap();
+    ctx.builder.build_store(cap_field, new_cap).unwrap();
+    ctx.builder.build_unconditional_branch(copy_bb).unwrap();
+
+    // copy block
+    ctx.builder.position_at_end(copy_bb);
+    // Reload ptr after potential realloc (phi)
+    let phi_ptr = ctx.builder.build_phi(ptr_ty, "ptr_phi").unwrap();
+    phi_ptr.add_incoming(&[
+        (&cur_ptr, entry_bb),
+        (&new_buf, grow_bb),
+    ]);
+    let final_ptr = phi_ptr.as_basic_value().into_pointer_value();
+
+    // memcpy(ptr + cur_len, src_ptr, src_len)
+    let dest = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), final_ptr, &[cur_len], "dest").unwrap()
+    };
+    ctx.builder.build_call(memcpy, &[dest.into(), src_ptr.into(), src_len.into()], "").unwrap();
+
+    // store new len
+    ctx.builder.build_store(len_field, new_len).unwrap();
+
+    None
+}
+
+/// Compile `s.as_str()` → extract ptr and len, build `{ptr, len}` str struct.
+fn compile_string_as_str<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap();
+    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap();
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let str_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into()], false);
+    let mut result = str_ty.get_undef();
+    result = ctx.builder.build_insert_value(result, ptr, 0, "as_ptr").unwrap().into_struct_value();
+    result = ctx.builder.build_insert_value(result, len, 1, "as_len").unwrap().into_struct_value();
+    Some(result.into())
+}
+
+// ---------------------------------------------------------------------------
 // String interpolation
 // ---------------------------------------------------------------------------
 
@@ -2846,6 +3035,24 @@ fn compile_string_interp<'ctx>(
                         fmt.push_str("%c");
                         if let Some(v) = val {
                             args.push(v.into());
+                        }
+                    }
+                    Ty::Struct { def_id, .. } => {
+                        let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
+                        if name == Some("String") {
+                            fmt.push_str("%.*s");
+                            if let Some(v) = val {
+                                let sv = v.into_struct_value();
+                                let len = ctx.builder.build_extract_value(sv, 1, "interp_len").unwrap();
+                                let ptr = ctx.builder.build_extract_value(sv, 0, "interp_ptr").unwrap();
+                                args.push(len.into());
+                                args.push(ptr.into());
+                            }
+                        } else {
+                            fmt.push_str("%lld");
+                            if let Some(v) = val {
+                                args.push(v.into());
+                            }
                         }
                     }
                     _ => {

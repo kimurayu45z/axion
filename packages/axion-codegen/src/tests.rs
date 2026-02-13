@@ -87,6 +87,11 @@ fn compile_ir(src: &str) -> String {
     compile_to_ir(&sf, &resolved, &type_out, &type_env, "test", Some(&mono_output))
 }
 
+fn compile_ir_with_prelude(src: &str) -> String {
+    let (combined, _) = axion_resolve::prelude::with_prelude(src);
+    compile_ir(&combined)
+}
+
 #[test]
 fn compile_empty_main() {
     let result = compile_and_run("fn main()\n    0\n");
@@ -1495,4 +1500,99 @@ fn main() -> i64
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 99);
+}
+
+// ===== String type tests =====
+
+#[test]
+fn compile_string_new() {
+    let src = "\
+fn main() -> i64
+    let s = String.new()
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_string_from() {
+    let src = "\
+fn main()
+    let s = String.from(\"hello\")
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_string_len() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"abc\")
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 3);
+}
+
+#[test]
+fn compile_string_is_empty() {
+    let src = "\
+fn main() -> i64
+    let s = String.new()
+    if s.is_empty()
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_string_push() {
+    let src = "\
+fn main()
+    let mut s = String.from(\"hello\")
+    s.push(\" world\")
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello world");
+}
+
+#[test]
+fn compile_string_as_str() {
+    let src = "\
+fn main()
+    let s = String.from(\"hello\")
+    let st = s.as_str()
+    println(st)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_string_drop() {
+    let src = "\
+fn main()
+    let s = String.from(\"hello\")
+    println(s)
+";
+    let ir = compile_ir_with_prelude(src);
+    assert!(ir.contains("String.drop"), "IR should contain String.drop call");
+}
+
+#[test]
+fn compile_string_type_interp() {
+    let src = "\
+fn main()
+    let s = String.from(\"world\")
+    println(\"hello {s}\")
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello world");
 }

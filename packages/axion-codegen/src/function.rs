@@ -335,6 +335,47 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
         }
     }
 
+    // String intrinsic methods: skip normal body compilation.
+    let receiver_name_for_intrinsic = type_expr_name(&m.receiver_type);
+    if receiver_name_for_intrinsic == "String" {
+        // For non-drop String methods, emit a trivial return so IR is valid.
+        // The actual implementation is handled via codegen intrinsics in compile_call.
+        if m.name != "drop" {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else {
+                let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
+                ctx.builder.build_return(Some(&dummy)).unwrap();
+            }
+            return;
+        }
+    }
+    if receiver_name_for_intrinsic == "String" && m.name == "drop" {
+        if let Some(self_val) = fn_value.get_nth_param(0) {
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            let i64_ty = ctx.context.i64_type();
+            let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+            let self_ptr = self_val.into_pointer_value();
+            let buf_field = ctx.builder.build_struct_gep(string_ty, self_ptr, 0, "buf_field").unwrap();
+            let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
+
+            let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
+            let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
+            let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
+            ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
+
+            ctx.builder.position_at_end(free_bb);
+            if let Some(free_fn) = ctx.module.get_function("free") {
+                ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
+            }
+            ctx.builder.build_unconditional_branch(done_bb).unwrap();
+
+            ctx.builder.position_at_end(done_bb);
+            ctx.builder.build_return(None).unwrap();
+            return;
+        }
+    }
+
     // Compile body statements.
     let mut last_val = None;
     for (i, stmt) in m.body.iter().enumerate() {
@@ -469,6 +510,7 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         ctx.locals.clear();
         ctx.local_types.clear();
         ctx.heap_allocs.clear();
+        ctx.drop_locals.clear();
 
         // Handle self parameter for methods.
         let param_offset = if *is_method {

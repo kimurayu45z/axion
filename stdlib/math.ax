@@ -1,9 +1,3 @@
-fn abs[T: SNumber](x: T) -> T
-    if x < 0
-        0 - x
-    else
-        x
-
 fn min[T: Number](a: T, b: T) -> T
     if a < b
         a
@@ -24,6 +18,12 @@ fn clamp[T: Number](x: T, lo: T, hi: T) -> T
             hi
         else
             x
+
+fn abs[T: SNumber](x: T) -> T
+    if x < 0
+        0 - x
+    else
+        x
 
 fn sign[T: SNumber](x: T) -> T
     if x > 0

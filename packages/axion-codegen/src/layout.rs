@@ -117,6 +117,18 @@ pub fn prim_to_llvm<'ctx>(context: &'ctx Context, prim: PrimTy) -> BasicTypeEnum
 
 /// Convert a struct type to LLVM struct type, substituting type parameters with concrete types.
 fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty]) -> BasicTypeEnum<'ctx> {
+    // String → { ptr, i64 len, i64 cap }
+    let type_name = ctx.resolved.symbols.iter()
+        .find(|s| s.def_id == def_id)
+        .map(|s| s.name.as_str());
+    if type_name == Some("String") {
+        return ctx.context.struct_type(&[
+            ctx.context.ptr_type(AddressSpace::default()).into(),
+            ctx.context.i64_type().into(),
+            ctx.context.i64_type().into(),
+        ], false).into();
+    }
+
     if let Some(fields) = ctx.type_env.struct_fields.get(&def_id) {
         let subst = build_subst_map(ctx, def_id, type_args);
         let field_types: Vec<BasicTypeEnum<'ctx>> = fields

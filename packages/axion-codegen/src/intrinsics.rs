@@ -50,6 +50,33 @@ pub fn declare_intrinsics<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         .void_type()
         .fn_type(&[ctx.context.ptr_type(AddressSpace::default()).into()], false);
     ctx.module.add_function("free", free_ty, None);
+
+    // void *realloc(void *ptr, size_t size)
+    let realloc_ty = ctx
+        .context
+        .ptr_type(AddressSpace::default())
+        .fn_type(
+            &[
+                ctx.context.ptr_type(AddressSpace::default()).into(),
+                ctx.context.i64_type().into(),
+            ],
+            false,
+        );
+    ctx.module.add_function("realloc", realloc_ty, None);
+
+    // void *memcpy(void *dest, const void *src, size_t n)
+    let memcpy_ty = ctx
+        .context
+        .ptr_type(AddressSpace::default())
+        .fn_type(
+            &[
+                ctx.context.ptr_type(AddressSpace::default()).into(),
+                ctx.context.ptr_type(AddressSpace::default()).into(),
+                ctx.context.i64_type().into(),
+            ],
+            false,
+        );
+    ctx.module.add_function("memcpy", memcpy_ty, None);
 }
 
 /// Get the printf function.

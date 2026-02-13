@@ -1,11 +1,11 @@
-interface Number
-
 interface SInt
 
 interface UInt
 
 interface Int
 
+interface Float
+
 interface SNumber
 
-interface Float
+interface Number
