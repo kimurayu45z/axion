@@ -1,0 +1,30 @@
+pub struct Array[T]
+    _ptr: i64
+    _len: i64
+    _cap: i64
+
+impl Array[i64]
+    fn new() -> Array[i64]
+        let a: Array[i64] = Array #{_ptr: 0, _len: 0, _cap: 0}
+        a
+
+    fn len(self) -> i64
+        self._len
+
+    fn is_empty(self) -> bool
+        self._len == 0
+
+    fn push(mut self, item: i64)
+        {}
+
+    fn pop(mut self) -> i64
+        0
+
+    fn first(self) -> i64
+        0
+
+    fn last(self) -> i64
+        0
+
+    fn drop(mut self)
+        {}

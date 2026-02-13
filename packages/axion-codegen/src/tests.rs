@@ -1596,3 +1596,134 @@ fn main()
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.stdout.trim(), "hello world");
 }
+
+// ---------------------------------------------------------------------------
+// Array[T] tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compile_array_new() {
+    let src = "\
+fn main() -> i64
+    let a = Array[i64].new()
+    a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_array_push() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 3);
+}
+
+#[test]
+fn compile_array_index() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(42)
+    a.push(99)
+    a[0]
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_array_assign() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a[0] = 99
+    a[0]
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 99);
+}
+
+#[test]
+fn compile_array_first_last() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.first() + a.last()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 30); // 10 + 20
+}
+
+#[test]
+fn compile_array_pop() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    let v = a.pop()
+    v + a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 21); // 20 + 1
+}
+
+#[test]
+fn compile_array_is_empty() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    let before = a.is_empty()
+    a.push(1)
+    let after = a.is_empty()
+    if before
+        if after
+            0
+        else
+            1
+    else
+        2
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1); // before=true, after=false → 1
+}
+
+#[test]
+fn compile_array_for_in() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(1)
+    a.push(2)
+    a.push(3)
+    let mut sum: i64 = 0
+    for x in a
+        sum = sum + x
+    sum
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 6); // 1+2+3
+}
+
+#[test]
+fn compile_array_drop() {
+    let src = "\
+fn main()
+    let mut a = Array[i64].new()
+    a.push(1)
+";
+    let ir = compile_ir_with_prelude(src);
+    assert!(ir.contains("Array.drop") || ir.contains("Array.drop__i64"), "IR should contain Array.drop call");
+}

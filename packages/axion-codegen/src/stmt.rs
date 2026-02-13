@@ -4,7 +4,7 @@ use axion_syntax::*;
 use inkwell::values::BasicValueEnum;
 
 use crate::context::CodegenCtx;
-use crate::expr::{compile_expr, compile_expr_addr, get_obj_llvm_ty, resolve_arr_ty};
+use crate::expr::{compile_expr, compile_expr_addr, get_obj_llvm_ty, resolve_arr_ty, is_array_struct_ty};
 use crate::function::emit_cleanup;
 use crate::layout::{ty_to_llvm, build_subst_map, variant_struct_type};
 
@@ -174,6 +174,24 @@ fn compile_assign<'ctx>(ctx: &mut CodegenCtx<'ctx>, target: &Expr, value: &Expr)
                             let elem_llvm_ty = ty_to_llvm(ctx, elem);
                             let elem_ptr = unsafe {
                                 ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[idx.into_int_value()], "slice_assign").unwrap()
+                            };
+                            ctx.builder.build_store(elem_ptr, val).unwrap();
+                        }
+                    }
+                    // Array[T]: get Array pointer, load ptr field, GEP(ptr, [idx]) → store
+                    Ty::Struct { type_args, .. } if is_array_struct_ty(ctx, &arr_ty) => {
+                        let elem_ty = type_args.first().cloned().unwrap_or(Ty::Prim(axion_types::ty::PrimTy::I64));
+                        let arr_ptr_opt = compile_expr_addr(ctx, arr_expr);
+                        let idx = compile_expr(ctx, index);
+                        if let (Some(arr_ptr), Some(idx)) = (arr_ptr_opt, idx) {
+                            let ptr_ty = ctx.context.ptr_type(inkwell::AddressSpace::default());
+                            let i64_ty = ctx.context.i64_type();
+                            let array_struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+                            let ptr_field = ctx.builder.build_struct_gep(array_struct_ty, arr_ptr, 0, "ptr_field").unwrap();
+                            let data_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "data_ptr").unwrap().into_pointer_value();
+                            let elem_llvm_ty = ty_to_llvm(ctx, &elem_ty);
+                            let elem_ptr = unsafe {
+                                ctx.builder.build_in_bounds_gep(elem_llvm_ty, data_ptr, &[idx.into_int_value()], "arr_assign").unwrap()
                             };
                             ctx.builder.build_store(elem_ptr, val).unwrap();
                         }

@@ -705,6 +705,26 @@ fn compile_call<'ctx>(
             }
         }
 
+        // Array[T] intrinsic methods
+        if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
+            if type_name == "Array" {
+                let elem_ty = match &inner_ty {
+                    Ty::Struct { type_args, .. } if !type_args.is_empty() => type_args[0].clone(),
+                    _ => Ty::Prim(PrimTy::I64),
+                };
+                match field_name.as_str() {
+                    "new" if is_type_access => return compile_array_new(ctx),
+                    "len" => return compile_array_len(ctx, inner),
+                    "is_empty" => return compile_array_is_empty(ctx, inner),
+                    "push" => return compile_array_push(ctx, inner, args, &elem_ty),
+                    "pop" => return compile_array_pop(ctx, inner, &elem_ty),
+                    "first" => return compile_array_first(ctx, inner, &elem_ty),
+                    "last" => return compile_array_last(ctx, inner, &elem_ty),
+                    _ => {}
+                }
+            }
+        }
+
         // FixedArray built-in method calls
         if let Ty::Array { elem: _, len } = inner_ty {
             match field_name.as_str() {
@@ -2242,14 +2262,70 @@ fn compile_index<'ctx>(
                 sv = ctx.builder.build_insert_value(sv, slice_len, 1, "sl").unwrap().into_struct_value();
                 Some(sv.into())
             }
+            // Array[T] range indexing → Slice
+            _ if is_array_struct_ty(ctx, &arr_ty) => {
+                let elem_ty = get_array_elem_ty(&arr_ty);
+                let elem_llvm_ty = ty_to_llvm(ctx, &elem_ty);
+                let arr_val = compile_expr(ctx, arr_expr)?;
+                let sv = arr_val.into_struct_value();
+                let base_ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr")
+                    .unwrap().into_pointer_value();
+                let base_len = ctx.builder.build_extract_value(sv, 1, "arr_len")
+                    .unwrap().into_int_value();
+                let i64_ty = ctx.context.i64_type();
+                let (data_ptr, slice_len) = match (start, end) {
+                    (None, None) => (base_ptr, base_len),
+                    (Some(s), Some(e)) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, base_ptr, &[s_val], "arr_slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(e_val, s_val, "arr_slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                    (None, Some(e)) => {
+                        let e_val = compile_expr(ctx, e)?.into_int_value();
+                        (base_ptr, e_val)
+                    }
+                    (Some(s), None) => {
+                        let s_val = compile_expr(ctx, s)?.into_int_value();
+                        let offset_ptr = unsafe {
+                            ctx.builder.build_in_bounds_gep(elem_llvm_ty, base_ptr, &[s_val], "arr_slice_off").unwrap()
+                        };
+                        let len = ctx.builder.build_int_sub(base_len, s_val, "arr_slice_len").unwrap();
+                        (offset_ptr, len)
+                    }
+                };
+                let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+                let slice_struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into()], false);
+                let mut result = slice_struct_ty.const_zero();
+                result = ctx.builder.build_insert_value(result, data_ptr, 0, "sp").unwrap().into_struct_value();
+                result = ctx.builder.build_insert_value(result, slice_len, 1, "sl").unwrap().into_struct_value();
+                Some(result.into())
+            }
             _ => None,
         };
     }
 
     let index_val = compile_expr(ctx, index)?;
 
-    // Check for Slice indexing: s[i] where s is &[T]
+    // Check for Array[T] element indexing: arr[i]
     let arr_ty = resolve_arr_ty(ctx, arr_expr);
+    if is_array_struct_ty(ctx, &arr_ty) {
+        let arr_val = compile_expr(ctx, arr_expr)?;
+        let ptr = ctx.builder.build_extract_value(arr_val.into_struct_value(), 0, "arr_ptr")
+            .unwrap().into_pointer_value();
+        let elem_ty = get_array_elem_ty(&arr_ty);
+        let elem_llvm_ty = ty_to_llvm(ctx, &elem_ty);
+        let idx = index_val.into_int_value();
+        let elem_ptr = unsafe {
+            ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[idx], "arr_idx").unwrap()
+        };
+        return Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "arr_elem").unwrap());
+    }
+
+    // Check for Slice indexing: s[i] where s is &[T]
     if let Ty::Slice(ref elem) = arr_ty {
         let slice_val = compile_expr(ctx, arr_expr)?;
         let ptr = ctx.builder.build_extract_value(slice_val.into_struct_value(), 0, "slice_ptr")
@@ -2947,6 +3023,198 @@ fn compile_string_as_str<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Opti
 }
 
 // ---------------------------------------------------------------------------
+// Array[T] intrinsic methods
+// ---------------------------------------------------------------------------
+
+/// Helper: check if a Ty is Array[T] struct.
+pub fn is_array_struct_ty(ctx: &CodegenCtx, ty: &Ty) -> bool {
+    if let Ty::Struct { def_id, .. } = ty {
+        ctx.resolved.symbols.iter()
+            .any(|s| s.def_id == *def_id && s.name == "Array")
+    } else {
+        false
+    }
+}
+
+/// Helper: get the element type T from Array[T].
+fn get_array_elem_ty(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Struct { type_args, .. } if !type_args.is_empty() => type_args[0].clone(),
+        _ => Ty::Prim(PrimTy::I64),
+    }
+}
+
+/// Compile `Array[T].new()` → `{ null_ptr, 0, 0 }`
+fn compile_array_new<'ctx>(ctx: &CodegenCtx<'ctx>) -> Option<BasicValueEnum<'ctx>> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+    let null = ptr_ty.const_null();
+    let zero = i64_ty.const_zero();
+    let mut sv = struct_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, null, 0, "arr_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, zero, 1, "arr_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, zero, 2, "arr_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Compile `arr.len()` → extract field 1
+fn compile_array_len<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    Some(ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into())
+}
+
+/// Compile `arr.is_empty()` → field 1 == 0
+fn compile_array_is_empty<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    let len = ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into_int_value();
+    let zero = ctx.context.i64_type().const_zero();
+    let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
+    Some(cmp.into())
+}
+
+/// Compile `arr.push(item)` — mutates Array in-place via pointer.
+fn compile_array_push<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg], elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
+    let realloc = ctx.module.get_function("realloc")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
+
+    // Get pointer to Array struct
+    let array_ptr = compile_expr_addr(ctx, inner)?;
+
+    // Load current ptr, len, cap via GEP
+    let ptr_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 0, "ptr_field").unwrap();
+    let len_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 1, "len_field").unwrap();
+    let cap_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 2, "cap_field").unwrap();
+
+    let cur_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "cur_ptr").unwrap().into_pointer_value();
+    let cur_len = ctx.builder.build_load(i64_ty, len_field, "cur_len").unwrap().into_int_value();
+    let cur_cap = ctx.builder.build_load(i64_ty, cap_field, "cur_cap").unwrap().into_int_value();
+
+    // Compile the item to push
+    let item_val = compile_expr(ctx, &args[0].expr)?;
+
+    // new_len = cur_len + 1
+    let one = i64_ty.const_int(1, false);
+    let new_len = ctx.builder.build_int_add(cur_len, one, "new_len").unwrap();
+
+    // elem_size
+    let elem_size = elem_llvm_ty.size_of().unwrap();
+    let elem_size_i64 = ctx.builder.build_int_cast(elem_size, i64_ty, "elem_size").unwrap();
+
+    // if new_len > cur_cap → grow
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    let grow_bb = ctx.context.append_basic_block(fn_val, "arr_push_grow");
+    let store_bb = ctx.context.append_basic_block(fn_val, "arr_push_store");
+
+    let needs_grow = ctx.builder.build_int_compare(IntPredicate::UGT, new_len, cur_cap, "needs_grow").unwrap();
+    ctx.builder.build_conditional_branch(needs_grow, grow_bb, store_bb).unwrap();
+
+    // grow block
+    ctx.builder.position_at_end(grow_bb);
+    // new_cap = max(new_len, cap * 2)
+    let cap_doubled = ctx.builder.build_int_mul(cur_cap, i64_ty.const_int(2, false), "cap_x2").unwrap();
+    let use_doubled = ctx.builder.build_int_compare(IntPredicate::UGT, cap_doubled, new_len, "use_doubled").unwrap();
+    let new_cap = ctx.builder.build_select(use_doubled, cap_doubled, new_len, "new_cap").unwrap().into_int_value();
+    // byte_size = new_cap * elem_size
+    let byte_size = ctx.builder.build_int_mul(new_cap, elem_size_i64, "byte_size").unwrap();
+    // realloc(ptr, byte_size)
+    let new_buf = ctx.builder.build_call(realloc, &[cur_ptr.into(), byte_size.into()], "new_buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+    // store new ptr and cap
+    ctx.builder.build_store(ptr_field, new_buf).unwrap();
+    ctx.builder.build_store(cap_field, new_cap).unwrap();
+    ctx.builder.build_unconditional_branch(store_bb).unwrap();
+
+    // store block
+    ctx.builder.position_at_end(store_bb);
+    // Reload ptr after potential realloc (phi)
+    let phi_ptr = ctx.builder.build_phi(ptr_ty, "ptr_phi").unwrap();
+    phi_ptr.add_incoming(&[
+        (&cur_ptr, entry_bb),
+        (&new_buf, grow_bb),
+    ]);
+    let final_ptr = phi_ptr.as_basic_value().into_pointer_value();
+
+    // elem_ptr = GEP(ptr, [cur_len])
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(elem_llvm_ty, final_ptr, &[cur_len], "elem_ptr").unwrap()
+    };
+    // store item
+    ctx.builder.build_store(elem_ptr, item_val).unwrap();
+
+    // store new len
+    ctx.builder.build_store(len_field, new_len).unwrap();
+
+    None
+}
+
+/// Compile `arr.pop()` → remove and return last element.
+fn compile_array_pop<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
+
+    // Get pointer to Array struct
+    let array_ptr = compile_expr_addr(ctx, inner)?;
+
+    let ptr_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 0, "ptr_field").unwrap();
+    let len_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 1, "len_field").unwrap();
+
+    let cur_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "cur_ptr").unwrap().into_pointer_value();
+    let cur_len = ctx.builder.build_load(i64_ty, len_field, "cur_len").unwrap().into_int_value();
+
+    // new_len = cur_len - 1
+    let one = i64_ty.const_int(1, false);
+    let new_len = ctx.builder.build_int_sub(cur_len, one, "new_len").unwrap();
+
+    // elem_ptr = GEP(ptr, [new_len])
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(elem_llvm_ty, cur_ptr, &[new_len], "pop_ptr").unwrap()
+    };
+    let elem_val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, "pop_val").unwrap();
+
+    // store new_len
+    ctx.builder.build_store(len_field, new_len).unwrap();
+
+    Some(elem_val)
+}
+
+/// Compile `arr.first()` → load element at index 0.
+fn compile_array_first<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    let ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr").unwrap().into_pointer_value();
+    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
+    let zero = ctx.context.i64_type().const_zero();
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[zero], "first_ptr").unwrap()
+    };
+    Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "first_val").unwrap())
+}
+
+/// Compile `arr.last()` → load element at index len-1.
+fn compile_array_last<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let sv = val.into_struct_value();
+    let ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr").unwrap().into_pointer_value();
+    let len = ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into_int_value();
+    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
+    let one = ctx.context.i64_type().const_int(1, false);
+    let last_idx = ctx.builder.build_int_sub(len, one, "last_idx").unwrap();
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[last_idx], "last_ptr").unwrap()
+    };
+    Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "last_val").unwrap())
+}
+
+// ---------------------------------------------------------------------------
 // String interpolation
 // ---------------------------------------------------------------------------
 
@@ -3512,6 +3780,130 @@ fn compile_for<'ctx>(
         let header_bb = ctx.context.append_basic_block(fn_val, "for_slice_hdr");
         let body_bb = ctx.context.append_basic_block(fn_val, "for_slice_body");
         let exit_bb = ctx.context.append_basic_block(fn_val, "for_slice_exit");
+
+        ctx.builder.build_unconditional_branch(header_bb).unwrap();
+
+        // Header: idx < len
+        ctx.builder.position_at_end(header_bb);
+        let idx = ctx
+            .builder
+            .build_load(i64_ty, counter_alloca, "idx")
+            .unwrap()
+            .into_int_value();
+        let cond = ctx
+            .builder
+            .build_int_compare(IntPredicate::SLT, idx, len_val, "cond")
+            .unwrap();
+        ctx.builder
+            .build_conditional_branch(cond, body_bb, exit_bb)
+            .unwrap();
+
+        // Body: GEP to get element, bind pattern variable.
+        ctx.builder.position_at_end(body_bb);
+        let elem_ptr = unsafe {
+            ctx.builder
+                .build_in_bounds_gep(elem_llvm_ty, data_ptr, &[idx], "elem_ptr")
+                .unwrap()
+        };
+        let elem_val = ctx
+            .builder
+            .build_load(elem_llvm_ty, elem_ptr, "elem")
+            .unwrap();
+
+        // Bind pattern variable.
+        if let PatternKind::Ident(name) = &pattern.kind {
+            let elem_alloca = ctx.builder.build_alloca(elem_llvm_ty, name).unwrap();
+            ctx.builder.build_store(elem_alloca, elem_val).unwrap();
+            let def_id = ctx
+                .resolved
+                .symbols
+                .iter()
+                .find(|s| s.kind == SymbolKind::LocalVar && s.span == pattern.span)
+                .map(|s| s.def_id);
+            if let Some(def_id) = def_id {
+                ctx.locals.insert(def_id, elem_alloca);
+                ctx.local_types.insert(def_id, elem_llvm_ty);
+            }
+        }
+
+        // Loop context + body + counter increment.
+        let prev_exit = ctx.loop_exit_block.take();
+        let prev_header = ctx.loop_header_block.take();
+        ctx.loop_exit_block = Some(exit_bb);
+        ctx.loop_header_block = Some(header_bb);
+
+        for stmt in body {
+            compile_stmt(ctx, stmt);
+            if ctx
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        // idx++
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            let cur = ctx
+                .builder
+                .build_load(i64_ty, counter_alloca, "idx")
+                .unwrap()
+                .into_int_value();
+            let one = i64_ty.const_int(1, false);
+            let next = ctx.builder.build_int_add(cur, one, "next_idx").unwrap();
+            ctx.builder.build_store(counter_alloca, next).unwrap();
+            ctx.builder.build_unconditional_branch(header_bb).unwrap();
+        }
+
+        ctx.loop_exit_block = prev_exit;
+        ctx.loop_header_block = prev_header;
+        ctx.builder.position_at_end(exit_bb);
+        return;
+    }
+
+    // --- Branch 2.7: Array[T]: `for x in arr` ---
+    if is_array_struct_ty(ctx, &iter_ty) {
+        let elem_ty = get_array_elem_ty(&iter_ty);
+        let arr_val = match compile_expr(ctx, iter) {
+            Some(v) => v,
+            None => return,
+        };
+        let data_ptr = ctx.builder.build_extract_value(arr_val.into_struct_value(), 0, "arr_data")
+            .unwrap().into_pointer_value();
+        let len_val = ctx.builder.build_extract_value(arr_val.into_struct_value(), 1, "arr_len")
+            .unwrap().into_int_value();
+
+        let resolved_elem = if ctx.current_subst.is_empty() {
+            elem_ty
+        } else {
+            axion_mono::specialize::substitute(&elem_ty, &ctx.current_subst)
+        };
+        let elem_llvm_ty = ty_to_llvm(ctx, &resolved_elem);
+
+        let fn_val = ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let i64_ty = ctx.context.i64_type();
+        let counter_alloca = ctx.builder.build_alloca(i64_ty, "for_idx").unwrap();
+        ctx.builder
+            .build_store(counter_alloca, i64_ty.const_zero())
+            .unwrap();
+
+        let header_bb = ctx.context.append_basic_block(fn_val, "for_arr_hdr");
+        let body_bb = ctx.context.append_basic_block(fn_val, "for_arr_body");
+        let exit_bb = ctx.context.append_basic_block(fn_val, "for_arr_exit");
 
         ctx.builder.build_unconditional_branch(header_bb).unwrap();
 

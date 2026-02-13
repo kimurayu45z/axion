@@ -121,7 +121,7 @@ fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty])
     let type_name = ctx.resolved.symbols.iter()
         .find(|s| s.def_id == def_id)
         .map(|s| s.name.as_str());
-    if type_name == Some("String") {
+    if type_name == Some("String") || type_name == Some("Array") {
         return ctx.context.struct_type(&[
             ctx.context.ptr_type(AddressSpace::default()).into(),
             ctx.context.i64_type().into(),

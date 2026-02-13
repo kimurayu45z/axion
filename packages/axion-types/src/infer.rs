@@ -362,6 +362,22 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Array[T] built-in methods
+        if self.is_array_struct(&resolved) {
+            if let Ty::Struct { type_args, .. } = &resolved {
+                let elem = type_args.first().cloned().unwrap_or(Ty::Error);
+                match name {
+                    "len" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::I64)) },
+                    "is_empty" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
+                    "push" => return Ty::Fn { params: vec![elem.clone()], ret: Box::new(Ty::Unit) },
+                    "pop" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
+                    "first" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
+                    "last" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
+                    _ => {}
+                }
+            }
+        }
+
         // Slice built-in methods
         if let Ty::Slice(ref elem) = resolved {
             match name {
@@ -901,6 +917,11 @@ impl<'a> InferCtx<'a> {
             return match &resolved_arr {
                 Ty::Array { elem, .. } => Ty::Slice(elem.clone()),
                 Ty::Slice(elem) => Ty::Slice(elem.clone()),
+                // Array[T][..] → Slice &[T]
+                Ty::Struct { type_args, .. } if self.is_array_struct(&resolved_arr) => {
+                    let elem = type_args.first().cloned().unwrap_or(Ty::Error);
+                    Ty::Slice(Box::new(elem))
+                }
                 _ => Ty::Error,
             };
         }
@@ -929,6 +950,10 @@ impl<'a> InferCtx<'a> {
         match &resolved_arr {
             Ty::Array { elem, .. } => *elem.clone(),
             Ty::Slice(elem) => *elem.clone(),
+            // Array[T] indexing → T
+            Ty::Struct { type_args, .. } if self.is_array_struct(&resolved_arr) => {
+                type_args.first().cloned().unwrap_or(Ty::Error)
+            }
             Ty::Error => Ty::Error,
             _ => {
                 self.diagnostics.push(errors::type_mismatch(
@@ -1074,8 +1099,12 @@ impl<'a> InferCtx<'a> {
         let elem_ty = match &resolved {
             // Case 1: FixedArray [T; N]
             Ty::Array { elem, .. } => *elem.clone(),
-            // Case 2: Range[T] → T
+            // Case 2a: Range[T] → T
             Ty::Struct { type_args, .. } if self.is_range_struct(&resolved) => {
+                type_args.first().cloned().unwrap_or(Ty::Error)
+            }
+            // Case 2b: Array[T] → T
+            Ty::Struct { type_args, .. } if self.is_array_struct(&resolved) => {
                 type_args.first().cloned().unwrap_or(Ty::Error)
             }
             // Case 3: Slice &[T] → T
@@ -1134,6 +1163,16 @@ impl<'a> InferCtx<'a> {
         if let Ty::Struct { def_id, .. } = ty {
             self.resolved.symbols.iter()
                 .any(|s| s.def_id == *def_id && s.name == "Range" && matches!(s.kind, SymbolKind::Struct))
+        } else {
+            false
+        }
+    }
+
+    /// Check if a type is the Array struct (by looking up the struct name).
+    fn is_array_struct(&self, ty: &Ty) -> bool {
+        if let Ty::Struct { def_id, .. } = ty {
+            self.resolved.symbols.iter()
+                .any(|s| s.def_id == *def_id && s.name == "Array" && matches!(s.kind, SymbolKind::Struct))
         } else {
             false
         }

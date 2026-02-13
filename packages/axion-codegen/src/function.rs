@@ -335,8 +335,44 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
         }
     }
 
-    // String intrinsic methods: skip normal body compilation.
+    // String / Array intrinsic methods: skip normal body compilation.
     let receiver_name_for_intrinsic = type_expr_name(&m.receiver_type);
+    if receiver_name_for_intrinsic == "Array" {
+        if m.name != "drop" {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else {
+                let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
+                ctx.builder.build_return(Some(&dummy)).unwrap();
+            }
+            return;
+        }
+    }
+    if receiver_name_for_intrinsic == "Array" && m.name == "drop" {
+        if let Some(self_val) = fn_value.get_nth_param(0) {
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            let i64_ty = ctx.context.i64_type();
+            let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+            let self_ptr = self_val.into_pointer_value();
+            let buf_field = ctx.builder.build_struct_gep(array_ty, self_ptr, 0, "buf_field").unwrap();
+            let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
+
+            let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
+            let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
+            let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
+            ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
+
+            ctx.builder.position_at_end(free_bb);
+            if let Some(free_fn) = ctx.module.get_function("free") {
+                ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
+            }
+            ctx.builder.build_unconditional_branch(done_bb).unwrap();
+
+            ctx.builder.position_at_end(done_bb);
+            ctx.builder.build_return(None).unwrap();
+            return;
+        }
+    }
     if receiver_name_for_intrinsic == "String" {
         // For non-drop String methods, emit a trivial return so IR is valid.
         // The actual implementation is handled via codegen intrinsics in compile_call.
@@ -576,6 +612,51 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
                     ctx.locals.insert(sym.def_id, alloca);
                     ctx.local_types.insert(sym.def_id, val_ty);
                 }
+            }
+        }
+
+        // Check if this is an Array intrinsic method (monomorphized).
+        let original_name = ctx.resolved.symbols.iter()
+            .find(|s| s.def_id == *original_def_id)
+            .map(|s| s.name.as_str());
+        if let Some(name) = original_name {
+            if name.starts_with("Array.") {
+                let method_name = &name["Array.".len()..];
+                if method_name == "drop" {
+                    // emit Array.drop intrinsic body (free ptr if non-null)
+                    if let Some(self_val) = fn_value.get_nth_param(0) {
+                        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+                        let i64_ty = ctx.context.i64_type();
+                        let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+                        let self_ptr = self_val.into_pointer_value();
+                        let buf_field = ctx.builder.build_struct_gep(array_ty, self_ptr, 0, "buf_field").unwrap();
+                        let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
+
+                        let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
+                        let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
+                        let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
+                        ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
+
+                        ctx.builder.position_at_end(free_bb);
+                        if let Some(free_fn) = ctx.module.get_function("free") {
+                            ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
+                        }
+                        ctx.builder.build_unconditional_branch(done_bb).unwrap();
+
+                        ctx.builder.position_at_end(done_bb);
+                        ctx.builder.build_return(None).unwrap();
+                    }
+                } else {
+                    // emit trivial return
+                    if is_void_ty(&ret_ty) {
+                        ctx.builder.build_return(None).unwrap();
+                    } else {
+                        let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
+                        ctx.builder.build_return(Some(&dummy)).unwrap();
+                    }
+                }
+                ctx.current_subst.clear();
+                continue;
             }
         }
 
