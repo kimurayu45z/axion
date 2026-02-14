@@ -1727,3 +1727,25 @@ fn main()
     let ir = compile_ir_with_prelude(src);
     assert!(ir.contains("Array.drop") || ir.contains("Array.drop__i64"), "IR should contain Array.drop call");
 }
+
+#[test]
+fn compile_string_concat_basic() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"hello\") + String.from(\" world\")
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 11); // "hello world".len() == 11
+}
+
+#[test]
+fn compile_string_concat_empty() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"abc\") + String.new()
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 3); // "abc" + "" == "abc", len == 3
+}

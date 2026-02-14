@@ -367,6 +367,15 @@ fn compile_binop<'ctx>(
             | Ty::Prim(PrimTy::I128)
     );
 
+    // String + String → concat
+    if matches!(op, BinOp::Add) {
+        if let Some(name) = get_type_name_for_method_ctx(ctx, &lhs_ty) {
+            if name == "String" {
+                return compile_string_concat(ctx, lhs_val, rhs_val);
+            }
+        }
+    }
+
     if is_float {
         compile_float_binop(ctx, op, lhs_val, rhs_val)
     } else {
@@ -2913,6 +2922,50 @@ fn compile_string_from<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) -> Op
     sv = ctx.builder.build_insert_value(sv, buf, 0, "str_ptr").unwrap().into_struct_value();
     sv = ctx.builder.build_insert_value(sv, src_len, 1, "str_len").unwrap().into_struct_value();
     sv = ctx.builder.build_insert_value(sv, src_len, 2, "str_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Compile `a + b` for String values → allocate new buffer, memcpy both sides.
+fn compile_string_concat<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    lhs_val: BasicValueEnum<'ctx>,
+    rhs_val: BasicValueEnum<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let malloc = ctx.module.get_function("malloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    // Extract ptr and len from lhs
+    let lhs_struct = lhs_val.into_struct_value();
+    let lhs_ptr = ctx.builder.build_extract_value(lhs_struct, 0, "lhs_ptr").unwrap().into_pointer_value();
+    let lhs_len = ctx.builder.build_extract_value(lhs_struct, 1, "lhs_len").unwrap().into_int_value();
+
+    // Extract ptr and len from rhs
+    let rhs_struct = rhs_val.into_struct_value();
+    let rhs_ptr = ctx.builder.build_extract_value(rhs_struct, 0, "rhs_ptr").unwrap().into_pointer_value();
+    let rhs_len = ctx.builder.build_extract_value(rhs_struct, 1, "rhs_len").unwrap().into_int_value();
+
+    // new_len = lhs_len + rhs_len
+    let new_len = ctx.builder.build_int_add(lhs_len, rhs_len, "new_len").unwrap();
+
+    // malloc(new_len)
+    let buf = ctx.builder.build_call(malloc, &[new_len.into()], "concat_buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+
+    // memcpy(buf, lhs_ptr, lhs_len)
+    ctx.builder.build_call(memcpy, &[buf.into(), lhs_ptr.into(), lhs_len.into()], "").unwrap();
+
+    // memcpy(buf + lhs_len, rhs_ptr, rhs_len)
+    let dst = unsafe { ctx.builder.build_gep(ctx.context.i8_type(), buf, &[lhs_len], "concat_dst").unwrap() };
+    ctx.builder.build_call(memcpy, &[dst.into(), rhs_ptr.into(), rhs_len.into()], "").unwrap();
+
+    // Build { buf, new_len, new_len }
+    let mut sv = struct_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, buf, 0, "cat_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, new_len, 1, "cat_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, new_len, 2, "cat_cap").unwrap().into_struct_value();
     Some(sv.into())
 }
 

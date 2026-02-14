@@ -215,6 +215,14 @@ impl<'a> InferCtx<'a> {
 
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                // String + String → String (concatenation)
+                if op == BinOp::Add {
+                    let lhs_r = self.unify.resolve(&lhs_ty);
+                    let rhs_r = self.unify.resolve(&rhs_ty);
+                    if self.is_string_type(&lhs_r) && self.is_string_type(&rhs_r) {
+                        return lhs_r;
+                    }
+                }
                 // Both sides should unify; result is the same type.
                 if self.unify.unify(&lhs_ty, &rhs_ty).is_err() {
                     self.diagnostics.push(errors::type_mismatch(
@@ -1159,6 +1167,15 @@ impl<'a> InferCtx<'a> {
     }
 
     /// Check if a type is the Range struct (by looking up the struct name).
+    fn is_string_type(&self, ty: &Ty) -> bool {
+        if let Ty::Struct { def_id, .. } = ty {
+            self.resolved.symbols.iter()
+                .any(|s| s.def_id == *def_id && s.name == "String" && matches!(s.kind, SymbolKind::Struct))
+        } else {
+            false
+        }
+    }
+
     fn is_range_struct(&self, ty: &Ty) -> bool {
         if let Ty::Struct { def_id, .. } = ty {
             self.resolved.symbols.iter()
