@@ -1,0 +1,32 @@
+pub struct HashMap[K, V]
+    _keys: i64
+    _values: i64
+    _states: i64
+    _size: i64
+    _cap: i64
+
+impl[K, V] HashMap[K, V]
+    fn new() -> HashMap[K, V]
+        let m: HashMap[K, V] = HashMap #{_keys: 0, _values: 0, _states: 0, _size: 0, _cap: 0}
+        m
+
+    fn len(self) -> i64
+        self._size
+
+    fn is_empty(self) -> bool
+        self._size == 0
+
+    fn insert(mut self, key: K, value: V)
+        {}
+
+    fn get(self, key: K) -> Option[V]
+        Option.None
+
+    fn contains_key(self, key: K) -> bool
+        false
+
+    fn remove(mut self, key: K) -> Option[V]
+        Option.None
+
+    fn drop(mut self)
+        {}

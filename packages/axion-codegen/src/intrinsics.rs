@@ -77,6 +77,17 @@ pub fn declare_intrinsics<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             false,
         );
     ctx.module.add_function("memcpy", memcpy_ty, None);
+
+    // int memcmp(const void *s1, const void *s2, size_t n)
+    let memcmp_ty = ctx.context.i32_type().fn_type(
+        &[
+            ctx.context.ptr_type(AddressSpace::default()).into(),
+            ctx.context.ptr_type(AddressSpace::default()).into(),
+            ctx.context.i64_type().into(),
+        ],
+        false,
+    );
+    ctx.module.add_function("memcmp", memcmp_ty, None);
 }
 
 /// Get the printf function.

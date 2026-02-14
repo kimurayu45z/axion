@@ -1749,3 +1749,162 @@ fn main() -> i64
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 3); // "abc" + "" == "abc", len == 3
 }
+
+#[test]
+fn compile_string_eq_true() {
+    let src = "\
+fn main() -> i64
+    let a = String.from(\"hello\")
+    let b = String.from(\"hello\")
+    if a == b
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_string_eq_false() {
+    let src = "\
+fn main() -> i64
+    let a = String.from(\"hello\")
+    let b = String.from(\"world\")
+    if a == b
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_string_ne() {
+    let src = "\
+fn main() -> i64
+    let a = String.from(\"foo\")
+    let b = String.from(\"bar\")
+    if a != b
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_array_bool() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[bool].new()
+    a.push(true)
+    a.push(false)
+    a.push(true)
+    if a.first()
+        a.len()
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 3); // first is true, so returns len == 3
+}
+
+#[test]
+fn compile_array_f64() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[f64].new()
+    a.push(1.5)
+    a.push(2.5)
+    a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 2); // len after 2 pushes
+}
+
+#[test]
+fn compile_hashmap_insert_get() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(1, 42)
+    let v = m.get(1)
+    v.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_hashmap_overwrite() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(1, 10)
+    m.insert(1, 20)
+    let v = m.get(1)
+    v.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_hashmap_contains_key() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(5, 100)
+    if m.contains_key(5)
+        if m.contains_key(99)
+            0
+        else
+            1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_hashmap_remove() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(1, 42)
+    let removed = m.remove(1)
+    let after = m.get(1)
+    if after.is_none()
+        removed.unwrap_or(0)
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_hashmap_grow() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(1, 1)
+    m.insert(2, 2)
+    m.insert(3, 3)
+    m.insert(4, 4)
+    m.insert(5, 5)
+    m.insert(6, 6)
+    m.insert(7, 7)
+    m.insert(8, 8)
+    m.insert(9, 9)
+    m.insert(10, 10)
+    let v = m.get(10)
+    v.unwrap_or(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 10);
+}

@@ -176,7 +176,14 @@ pub fn type_check_with_imports(
                 };
                 let body_ty = ctx.infer_block_ty(&m.body);
 
-                if m.return_type.is_some() {
+                // Skip return-type body check for built-in intrinsic types (Array, String, HashMap)
+                // whose method bodies are stubs replaced by codegen intrinsics.
+                let is_intrinsic_receiver = matches!(
+                    receiver_name.as_str(),
+                    "Array" | "String" | "HashMap"
+                );
+
+                if m.return_type.is_some() && !is_intrinsic_receiver {
                     let expected_ret = ctx.current_return_ty.clone();
                     if ctx.unify.unify(&expected_ret, &body_ty).is_err() {
                         ctx.diagnostics.push(errors::return_type_mismatch(

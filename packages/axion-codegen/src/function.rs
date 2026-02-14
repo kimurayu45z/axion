@@ -373,6 +373,22 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
             return;
         }
     }
+    if receiver_name_for_intrinsic == "HashMap" {
+        if m.name == "drop" {
+            if let Some(self_val) = fn_value.get_nth_param(0) {
+                emit_hashmap_drop(ctx, fn_value, self_val.into_pointer_value());
+            }
+            return;
+        } else {
+            if is_void_ty(&ret_ty) {
+                ctx.builder.build_return(None).unwrap();
+            } else {
+                let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
+                ctx.builder.build_return(Some(&dummy)).unwrap();
+            }
+            return;
+        }
+    }
     if receiver_name_for_intrinsic == "String" {
         // For non-drop String methods, emit a trivial return so IR is valid.
         // The actual implementation is handled via codegen intrinsics in compile_call.
@@ -615,11 +631,28 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             }
         }
 
-        // Check if this is an Array intrinsic method (monomorphized).
+        // Check if this is a HashMap or Array intrinsic method (monomorphized).
         let original_name = ctx.resolved.symbols.iter()
             .find(|s| s.def_id == *original_def_id)
             .map(|s| s.name.as_str());
         if let Some(name) = original_name {
+            if name.starts_with("HashMap.") {
+                let method_name = &name["HashMap.".len()..];
+                if method_name == "drop" {
+                    if let Some(self_val) = fn_value.get_nth_param(0) {
+                        emit_hashmap_drop(ctx, fn_value, self_val.into_pointer_value());
+                    }
+                } else {
+                    if is_void_ty(&ret_ty) {
+                        ctx.builder.build_return(None).unwrap();
+                    } else {
+                        let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
+                        ctx.builder.build_return(Some(&dummy)).unwrap();
+                    }
+                }
+                ctx.current_subst.clear();
+                continue;
+            }
             if name.starts_with("Array.") {
                 let method_name = &name["Array.".len()..];
                 if method_name == "drop" {
@@ -708,4 +741,67 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         // Clear substitution.
         ctx.current_subst.clear();
     }
+}
+
+/// Emit HashMap.drop: free keys, values, and states buffers if non-null.
+fn emit_hashmap_drop<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    fn_value: inkwell::values::FunctionValue<'ctx>,
+    self_ptr: inkwell::values::PointerValue<'ctx>,
+) {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let hashmap_ty = ctx.context.struct_type(
+        &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), i64_ty.into(), i64_ty.into()],
+        false,
+    );
+
+    let free_fn = match ctx.module.get_function("free") {
+        Some(f) => f,
+        None => {
+            ctx.builder.build_return(None).unwrap();
+            return;
+        }
+    };
+
+    // Free keys buffer
+    let keys_field = ctx.builder.build_struct_gep(hashmap_ty, self_ptr, 0, "keys_field").unwrap();
+    let keys_ptr = ctx.builder.build_load(ptr_ty, keys_field, "keys_ptr").unwrap().into_pointer_value();
+    let keys_null = ctx.builder.build_is_null(keys_ptr, "keys_null").unwrap();
+    let free_keys_bb = ctx.context.append_basic_block(fn_value, "free_keys");
+    let after_keys_bb = ctx.context.append_basic_block(fn_value, "after_keys");
+    ctx.builder.build_conditional_branch(keys_null, after_keys_bb, free_keys_bb).unwrap();
+
+    ctx.builder.position_at_end(free_keys_bb);
+    ctx.builder.build_call(free_fn, &[keys_ptr.into()], "").unwrap();
+    ctx.builder.build_unconditional_branch(after_keys_bb).unwrap();
+
+    // Free values buffer
+    ctx.builder.position_at_end(after_keys_bb);
+    let vals_field = ctx.builder.build_struct_gep(hashmap_ty, self_ptr, 1, "vals_field").unwrap();
+    let vals_ptr = ctx.builder.build_load(ptr_ty, vals_field, "vals_ptr").unwrap().into_pointer_value();
+    let vals_null = ctx.builder.build_is_null(vals_ptr, "vals_null").unwrap();
+    let free_vals_bb = ctx.context.append_basic_block(fn_value, "free_vals");
+    let after_vals_bb = ctx.context.append_basic_block(fn_value, "after_vals");
+    ctx.builder.build_conditional_branch(vals_null, after_vals_bb, free_vals_bb).unwrap();
+
+    ctx.builder.position_at_end(free_vals_bb);
+    ctx.builder.build_call(free_fn, &[vals_ptr.into()], "").unwrap();
+    ctx.builder.build_unconditional_branch(after_vals_bb).unwrap();
+
+    // Free states buffer
+    ctx.builder.position_at_end(after_vals_bb);
+    let states_field = ctx.builder.build_struct_gep(hashmap_ty, self_ptr, 2, "states_field").unwrap();
+    let states_ptr = ctx.builder.build_load(ptr_ty, states_field, "states_ptr").unwrap().into_pointer_value();
+    let states_null = ctx.builder.build_is_null(states_ptr, "states_null").unwrap();
+    let free_states_bb = ctx.context.append_basic_block(fn_value, "free_states");
+    let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
+    ctx.builder.build_conditional_branch(states_null, done_bb, free_states_bb).unwrap();
+
+    ctx.builder.position_at_end(free_states_bb);
+    ctx.builder.build_call(free_fn, &[states_ptr.into()], "").unwrap();
+    ctx.builder.build_unconditional_branch(done_bb).unwrap();
+
+    ctx.builder.position_at_end(done_bb);
+    ctx.builder.build_return(None).unwrap();
 }

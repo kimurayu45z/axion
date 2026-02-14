@@ -128,6 +128,15 @@ fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty])
             ctx.context.i64_type().into(),
         ], false).into();
     }
+    if type_name == Some("HashMap") {
+        return ctx.context.struct_type(&[
+            ctx.context.ptr_type(AddressSpace::default()).into(), // keys
+            ctx.context.ptr_type(AddressSpace::default()).into(), // values
+            ctx.context.ptr_type(AddressSpace::default()).into(), // states
+            ctx.context.i64_type().into(), // size
+            ctx.context.i64_type().into(), // cap
+        ], false).into();
+    }
 
     if let Some(fields) = ctx.type_env.struct_fields.get(&def_id) {
         let subst = build_subst_map(ctx, def_id, type_args);
