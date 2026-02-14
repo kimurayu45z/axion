@@ -281,7 +281,7 @@ fn cmd_build_single(file_path: &str, output_name: Option<String>, emit_llvm_ir: 
     }
 }
 
-fn cmd_build_project(root: &Path, output_name: Option<String>, _emit_llvm_ir: bool, json_output: bool) {
+fn cmd_build_project(root: &Path, output_name: Option<String>, emit_llvm_ir: bool, json_output: bool) {
     let output = axion_module::compile_project_with_prelude(root);
 
     let has_errors = output
@@ -292,6 +292,63 @@ fn cmd_build_project(root: &Path, output_name: Option<String>, _emit_llvm_ir: bo
     if has_errors {
         let display = root.display().to_string();
         report_diagnostics_and_exit(&output.diagnostics, &display, json_output);
+    }
+
+    // Per-module IR output mode: emit .ll files and return early.
+    if emit_llvm_ir {
+        for module in &output.modules {
+            let resolved = match module.resolved.as_ref() {
+                Some(r) => r,
+                None => continue,
+            };
+            let type_out = match module.type_output.as_ref() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let mut unify = axion_types::unify::UnifyContext::new();
+            let type_env = axion_types::env::TypeEnv::build(&module.ast, resolved, &mut unify);
+
+            let borrow_diags = axion_borrow::borrow_check(
+                &module.ast, resolved, type_out, &type_env, &module.file_path, &module.source,
+            );
+            let borrow_errors: Vec<_> = borrow_diags
+                .iter()
+                .filter(|d| d.severity == axion_diagnostics::Severity::Error)
+                .collect();
+            if !borrow_errors.is_empty() {
+                for diag in &borrow_errors {
+                    eprintln!(
+                        "{}: [{}] {}",
+                        diag.severity.as_str(),
+                        diag.code,
+                        diag.message
+                    );
+                    eprintln!(
+                        "  --> {}:{}:{}",
+                        diag.primary_span.file,
+                        diag.primary_span.line,
+                        diag.primary_span.col
+                    );
+                }
+                process::exit(1);
+            }
+
+            let mono = axion_mono::monomorphize(&module.ast, resolved, type_out, &type_env);
+            let mod_name = module.module_path.0.join("_");
+            let ir = axion_codegen::compile_to_ir(
+                &module.ast, resolved, type_out, &type_env, &mod_name, Some(&mono),
+            );
+            let ir_path = format!("{}.ll", mod_name);
+            match std::fs::write(&ir_path, &ir) {
+                Ok(()) => println!("Wrote {ir_path}"),
+                Err(e) => {
+                    eprintln!("error: could not write IR: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        return;
     }
 
     // Per-module: borrow check, monomorphize, codegen to .o

@@ -25,12 +25,14 @@ pub struct Export {
 ///
 /// `prelude_imports`: symbols to inject into every module (from the prelude module).
 /// `start_def_id_offset`: the starting DefId offset (accounts for prelude symbols).
+/// `std_exports`: per-std-module exports for validating `use std.*` declarations.
 pub fn resolve_in_order(
     modules: &mut [Module],
     graph: &ModuleGraph,
     order: &[usize],
     prelude_imports: &[(String, DefId, SymbolKind)],
     start_def_id_offset: u32,
+    std_exports: &HashMap<String, Vec<Export>>,
 ) -> (Vec<Vec<Export>>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut exports: Vec<Vec<Export>> = vec![Vec::new(); modules.len()];
@@ -43,6 +45,11 @@ pub fn resolve_in_order(
         // Inject prelude imports first.
         imports.extend_from_slice(prelude_imports);
         let mut imported_names: HashMap<String, usize> = HashMap::new(); // name → dep_idx
+
+        // Validate `use std.*` declarations against std_exports.
+        if !std_exports.is_empty() {
+            validate_std_imports(&modules[idx], std_exports, &mut diagnostics);
+        }
 
         for &dep_idx in &graph.dependencies[idx] {
             let dep_exports = &exports[dep_idx];
@@ -185,6 +192,74 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
     }
 
     names
+}
+
+/// Validate `use std.*` declarations in a module against the std exports map.
+///
+/// The prelude already injects all std symbols, so no additional imports are
+/// needed — this function only checks that the referenced std module and symbol
+/// actually exist, emitting E0600 / E0602 / E0603 as appropriate.
+fn validate_std_imports(
+    module: &Module,
+    std_exports: &HashMap<String, Vec<Export>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for item in &module.ast.items {
+        if let ItemKind::Use(use_decl) = &item.kind {
+            if use_decl.path.first().map(|s| s.as_str()) != Some("std") {
+                continue;
+            }
+            // Expect at least `std.<module>.<name>` (3 segments),
+            // or `std.<module>.{names}` (2 segments with members).
+            let has_members = use_decl.members.is_some();
+            if use_decl.path.len() < 3 && !(use_decl.path.len() == 2 && has_members) {
+                let path_str = use_decl.path.join(".");
+                diagnostics.push(errors::unresolved_module(
+                    &path_str,
+                    &module.file_path,
+                    use_decl.span,
+                    &module.source,
+                ));
+                continue;
+            }
+
+            let std_mod_name = &use_decl.path[1];
+            let mod_exports = match std_exports.get(std_mod_name.as_str()) {
+                Some(exports) => exports,
+                None => {
+                    let path_str = use_decl.path.join(".");
+                    diagnostics.push(errors::unresolved_module(
+                        &path_str,
+                        &module.file_path,
+                        use_decl.span,
+                        &module.source,
+                    ));
+                    continue;
+                }
+            };
+
+            // Collect requested names: either grouped `{a, b}` or the last path segment.
+            let names: Vec<&str> = if let Some(ref members) = use_decl.members {
+                members.iter().map(|s| s.as_str()).collect()
+            } else {
+                vec![use_decl.path.last().unwrap().as_str()]
+            };
+
+            for name in &names {
+                if mod_exports.iter().any(|e| e.name == *name) {
+                    // Symbol found — prelude already injected it, nothing to do.
+                } else {
+                    diagnostics.push(errors::unresolved_name(
+                        name,
+                        &format!("std.{}", std_mod_name),
+                        &module.file_path,
+                        use_decl.span,
+                        &module.source,
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Find the span of a use declaration that imports a given name.

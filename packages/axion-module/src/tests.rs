@@ -239,3 +239,82 @@ fn cross_file_with_prelude_string() {
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
 }
+
+// -----------------------------------------------------------------------
+// std import: use std.math.min
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_math_min() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.math.min\n\nfn main() -> i64\n    min[i64](1, 2)\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+// -----------------------------------------------------------------------
+// std import: use std.option.Option
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_option() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.option.Option\n\nfn main()\n    let x: Option[i64] = None\n",
+    )]);
+    let module_errors: Vec<_> = errors(&output.diagnostics)
+        .into_iter()
+        .filter(|d| d.code.starts_with("E06"))
+        .collect();
+    assert!(module_errors.is_empty(), "expected no module errors, got: {module_errors:?}");
+}
+
+// -----------------------------------------------------------------------
+// std import: grouped use std.math.{min, max}
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_grouped() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.math.{min, max}\n\nfn main() -> i64\n    min[i64](1, max[i64](2, 3))\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+// -----------------------------------------------------------------------
+// std import: nonexistent symbol → E0603
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_nonexistent_symbol() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.math.nonexistent\n\nfn main()\n    nonexistent()\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(
+        errs.iter().any(|d| d.code == "E0603"),
+        "expected E0603 unresolved_import, got: {errs:?}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// std import: nonexistent std module → E0600
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_nonexistent_module() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.nonexistent.foo\n\nfn main()\n    foo()\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(
+        errs.iter().any(|d| d.code == "E0600"),
+        "expected E0600 unresolved_module, got: {errs:?}"
+    );
+}

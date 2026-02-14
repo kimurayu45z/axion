@@ -3,15 +3,18 @@ pub mod errors;
 pub mod graph;
 pub mod import;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use axion_diagnostics::Diagnostic;
 use axion_resolve::def_id::{DefId, SymbolKind};
-use axion_resolve::prelude::prelude_source;
+use axion_resolve::prelude::{prelude_source_with_boundaries, StdFileBoundary};
 use axion_resolve::ResolveOutput;
 use axion_syntax::SourceFile;
 use axion_types::ExternalTypeInfo;
 use axion_types::TypeCheckOutput;
+
+use import::Export;
 
 /// A dot-separated module path, e.g. `["net", "http"]`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,8 +68,8 @@ pub fn compile_sources_with_prelude(sources: &[(&str, &str)]) -> CompilationOutp
 }
 
 fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
-    // 1. Parse & resolve prelude as a single unit.
-    let src = prelude_source();
+    // 1. Parse & resolve prelude as a single unit, keeping per-file boundaries.
+    let (src, boundaries) = prelude_source_with_boundaries();
     let (prelude_ast, _) = axion_parser::parse(&src, "<prelude>");
     let (prelude_resolved, _) = axion_resolve::resolve_single(&prelude_ast, "<prelude>", &src);
 
@@ -92,14 +95,49 @@ fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
 
     let prelude_def_id_offset = prelude_resolved.symbols.len() as u32;
 
-    // 3. Build prelude TypeEnv for ExternalTypeInfo.
+    // 3. Build per-std-module exports map for `use std.*` validation.
+    let std_exports = build_std_exports(&prelude_resolved, &boundaries);
+
+    // 4. Build prelude TypeEnv for ExternalTypeInfo.
     let mut prelude_unify = axion_types::unify::UnifyContext::new();
     let prelude_type_env =
         axion_types::env::TypeEnv::build(&prelude_ast, &prelude_resolved, &mut prelude_unify);
     let prelude_ext = build_prelude_external_type_info(&prelude_type_env);
 
-    // 4. Compile modules with prelude context.
-    compile_modules_inner(modules, &prelude_imports, prelude_def_id_offset, &prelude_ext)
+    // 5. Compile modules with prelude context.
+    compile_modules_inner(modules, &prelude_imports, prelude_def_id_offset, &prelude_ext, &std_exports)
+}
+
+/// Build per-std-module export map from the combined prelude resolve output.
+///
+/// Uses the byte boundaries to determine which stdlib file each symbol belongs to.
+fn build_std_exports(
+    resolved: &ResolveOutput,
+    boundaries: &[StdFileBoundary],
+) -> HashMap<String, Vec<Export>> {
+    let mut map: HashMap<String, Vec<Export>> = HashMap::new();
+
+    for sym in &resolved.symbols {
+        // Skip builtins (dummy spans).
+        if sym.span == axion_syntax::Span::dummy() {
+            continue;
+        }
+
+        // Determine which stdlib file this symbol belongs to based on span.start.
+        let start = sym.span.start as usize;
+        if let Some(boundary) = boundaries.iter().find(|b| start >= b.start && start < b.end) {
+            map.entry(boundary.name.clone())
+                .or_default()
+                .push(Export {
+                    name: sym.name.clone(),
+                    def_id: sym.def_id,
+                    kind: sym.kind,
+                    vis: sym.vis.clone(),
+                });
+        }
+    }
+
+    map
 }
 
 /// Build ExternalTypeInfo from a prelude TypeEnv.
@@ -119,7 +157,7 @@ fn build_prelude_external_type_info(env: &axion_types::env::TypeEnv) -> External
 
 /// Backward-compatible: compile without prelude.
 fn compile_modules(modules: Vec<Module>) -> CompilationOutput {
-    compile_modules_inner(modules, &[], 0, &ExternalTypeInfo::default())
+    compile_modules_inner(modules, &[], 0, &ExternalTypeInfo::default(), &HashMap::new())
 }
 
 fn compile_modules_inner(
@@ -127,6 +165,7 @@ fn compile_modules_inner(
     prelude_imports: &[(String, DefId, SymbolKind)],
     start_def_id_offset: u32,
     prelude_ext: &ExternalTypeInfo,
+    std_exports: &HashMap<String, Vec<Export>>,
 ) -> CompilationOutput {
     let mut all_diagnostics = Vec::new();
 
@@ -154,7 +193,7 @@ fn compile_modules_inner(
     // Phase 4: Topological sort and resolve.
     let order = graph.topological_sort();
     let (_exports, resolve_diags) =
-        import::resolve_in_order(&mut modules, &graph, &order, prelude_imports, start_def_id_offset);
+        import::resolve_in_order(&mut modules, &graph, &order, prelude_imports, start_def_id_offset, std_exports);
     all_diagnostics.extend(resolve_diags);
 
     // Phase 5: Type check each module in topological order.

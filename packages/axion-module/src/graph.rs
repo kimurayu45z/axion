@@ -36,8 +36,9 @@ impl ModuleGraph {
                         if !dependencies[i].contains(&target_idx) {
                             dependencies[i].push(target_idx);
                         }
-                    } else {
+                    } else if use_decl.path.first().map(|s| s.as_str()) != Some("std") {
                         // Build the module path string for the error.
+                        // Skip `std.*` paths — they are validated in resolve_in_order.
                         let path_str = use_decl.path.join(".");
                         diagnostics.push(errors::unresolved_module(
                             &path_str,
