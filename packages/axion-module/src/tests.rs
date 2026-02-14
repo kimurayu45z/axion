@@ -1,6 +1,6 @@
 use axion_diagnostics::Severity;
 
-use crate::compile_sources;
+use crate::{compile_sources, compile_sources_with_prelude};
 
 fn errors(diags: &[axion_diagnostics::Diagnostic]) -> Vec<&axion_diagnostics::Diagnostic> {
     diags.iter().filter(|d| d.severity == Severity::Error).collect()
@@ -217,6 +217,23 @@ fn multi_level_import() {
         (
             "main.ax",
             "use pkg.mid.middle\n\nfn main()\n    middle()\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+// -----------------------------------------------------------------------
+// Cross-file with prelude: String type shared across modules
+// -----------------------------------------------------------------------
+
+#[test]
+fn cross_file_with_prelude_string() {
+    let output = compile_sources_with_prelude(&[
+        ("util.ax", "pub fn greet() -> String\n    \"hello\"\n"),
+        (
+            "main.ax",
+            "use pkg.util.greet\n\nfn main()\n    let s: String = greet()\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);

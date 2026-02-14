@@ -7,11 +7,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: axion-driver <command> [options] <file>");
+        eprintln!("Usage: axion-driver <command> [options] <file|dir>");
         eprintln!();
         eprintln!("Commands:");
-        eprintln!("  check <file>    Parse and check an Axion source file");
-        eprintln!("  build <file>    Compile an Axion source file to an executable");
+        eprintln!("  check <file|dir>    Parse and check an Axion source file or project");
+        eprintln!("  build <file|dir>    Compile an Axion source file or project to an executable");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --output-format json    Output diagnostics as JSON");
@@ -65,6 +65,15 @@ fn cmd_check(args: &[String]) {
         }
     };
 
+    let path = Path::new(file_path);
+    if path.is_dir() {
+        cmd_check_project(path, json_output);
+    } else {
+        cmd_check_single(file_path, json_output);
+    }
+}
+
+fn cmd_check_single(file_path: &str, json_output: bool) {
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
         Err(e) => {
@@ -100,30 +109,13 @@ fn cmd_check(args: &[String]) {
         diag.primary_span.line -= prelude_lines_u32;
     }
 
-    if json_output {
-        let output = DiagnosticOutput::new(diagnostics);
-        println!("{}", output.to_json());
-    } else {
-        if diagnostics.is_empty() {
-            println!("OK: {file_path}");
-        } else {
-            for diag in &diagnostics {
-                eprintln!(
-                    "{}: [{}] {}",
-                    diag.severity.as_str(),
-                    diag.code,
-                    diag.message
-                );
-                eprintln!(
-                    "  --> {}:{}:{}",
-                    diag.primary_span.file,
-                    diag.primary_span.line,
-                    diag.primary_span.col
-                );
-            }
-            process::exit(1);
-        }
-    }
+    report_diagnostics(&diagnostics, file_path, json_output);
+}
+
+fn cmd_check_project(root: &Path, json_output: bool) {
+    let output = axion_module::compile_project_with_prelude(root);
+    let display = root.display().to_string();
+    report_diagnostics(&output.diagnostics, &display, json_output);
 }
 
 fn cmd_build(args: &[String]) {
@@ -171,11 +163,20 @@ fn cmd_build(args: &[String]) {
         Some(p) => p,
         None => {
             eprintln!("error: no input file specified");
-            eprintln!("Usage: axion-driver build [options] <file>");
+            eprintln!("Usage: axion-driver build [options] <file|dir>");
             process::exit(1);
         }
     };
 
+    let path = Path::new(file_path);
+    if path.is_dir() {
+        cmd_build_project(path, output_name, emit_llvm_ir, json_output);
+    } else {
+        cmd_build_single(file_path, output_name, emit_llvm_ir, json_output);
+    }
+}
+
+fn cmd_build_single(file_path: &str, output_name: Option<String>, emit_llvm_ir: bool, json_output: bool) {
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
         Err(e) => {
@@ -278,6 +279,155 @@ fn cmd_build(args: &[String]) {
             process::exit(1);
         }
     }
+}
+
+fn cmd_build_project(root: &Path, output_name: Option<String>, _emit_llvm_ir: bool, json_output: bool) {
+    let output = axion_module::compile_project_with_prelude(root);
+
+    let has_errors = output
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == axion_diagnostics::Severity::Error);
+
+    if has_errors {
+        let display = root.display().to_string();
+        report_diagnostics_and_exit(&output.diagnostics, &display, json_output);
+    }
+
+    // Per-module: borrow check, monomorphize, codegen to .o
+    let mut obj_paths = Vec::new();
+    for module in &output.modules {
+        let resolved = match module.resolved.as_ref() {
+            Some(r) => r,
+            None => continue,
+        };
+        let type_out = match module.type_output.as_ref() {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Borrow check.
+        let mut unify = axion_types::unify::UnifyContext::new();
+        let type_env = axion_types::env::TypeEnv::build(&module.ast, resolved, &mut unify);
+        let borrow_diags = axion_borrow::borrow_check(
+            &module.ast, resolved, type_out, &type_env, &module.file_path, &module.source,
+        );
+
+        let borrow_errors: Vec<_> = borrow_diags
+            .iter()
+            .filter(|d| d.severity == axion_diagnostics::Severity::Error)
+            .collect();
+        if !borrow_errors.is_empty() {
+            for diag in &borrow_errors {
+                eprintln!(
+                    "{}: [{}] {}",
+                    diag.severity.as_str(),
+                    diag.code,
+                    diag.message
+                );
+                eprintln!(
+                    "  --> {}:{}:{}",
+                    diag.primary_span.file,
+                    diag.primary_span.line,
+                    diag.primary_span.col
+                );
+            }
+            process::exit(1);
+        }
+
+        // Monomorphize.
+        let mono = axion_mono::monomorphize(&module.ast, resolved, type_out, &type_env);
+
+        // Codegen to object.
+        let mod_name = module.module_path.0.join("_");
+        let obj_bytes = match axion_codegen::compile_to_object(
+            &module.ast, resolved, type_out, &type_env, &mod_name, Some(&mono),
+        ) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("error: codegen failed for module '{}': {e}", mod_name);
+                process::exit(1);
+            }
+        };
+
+        let obj_path = format!("{}.o", mod_name);
+        if let Err(e) = std::fs::write(&obj_path, &obj_bytes) {
+            eprintln!("error: could not write object file '{obj_path}': {e}");
+            process::exit(1);
+        }
+        obj_paths.push(obj_path);
+    }
+
+    // Link all .o files.
+    let output_path = output_name.unwrap_or_else(|| "a.out".to_string());
+    let status = match std::process::Command::new("cc")
+        .args(&obj_paths)
+        .arg("-o")
+        .arg(&output_path)
+        .status()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: failed to run linker: {e}");
+            // Clean up .o files.
+            for p in &obj_paths {
+                let _ = std::fs::remove_file(p);
+            }
+            process::exit(1);
+        }
+    };
+
+    // Clean up .o files.
+    for p in &obj_paths {
+        let _ = std::fs::remove_file(p);
+    }
+
+    if status.success() {
+        println!("Built {output_path}");
+    } else {
+        eprintln!(
+            "error: linker failed with exit code: {}",
+            status.code().unwrap_or(-1)
+        );
+        process::exit(1);
+    }
+}
+
+fn report_diagnostics(diagnostics: &[axion_diagnostics::Diagnostic], label: &str, json_output: bool) {
+    if json_output {
+        let output = DiagnosticOutput::new(diagnostics.to_vec());
+        println!("{}", output.to_json());
+    } else {
+        let has_errors = diagnostics
+            .iter()
+            .any(|d| d.severity == axion_diagnostics::Severity::Error);
+        if diagnostics.is_empty() {
+            println!("OK: {label}");
+        } else {
+            for diag in diagnostics {
+                eprintln!(
+                    "{}: [{}] {}",
+                    diag.severity.as_str(),
+                    diag.code,
+                    diag.message
+                );
+                eprintln!(
+                    "  --> {}:{}:{}",
+                    diag.primary_span.file,
+                    diag.primary_span.line,
+                    diag.primary_span.col
+                );
+            }
+            if has_errors {
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn report_diagnostics_and_exit(diagnostics: &[axion_diagnostics::Diagnostic], label: &str, json_output: bool) -> ! {
+    report_diagnostics(diagnostics, label, json_output);
+    process::exit(1);
 }
 
 /// Extension to get string representation of severity.

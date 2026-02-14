@@ -8,6 +8,15 @@ pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/math.ax");
 pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/string.ax");
 pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/array.ax");
 
+/// Get the combined prelude source (without user source).
+pub fn prelude_source() -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT, PRELUDE_ITER,
+        PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING, PRELUDE_ARRAY,
+    )
+}
+
 /// Prepend the prelude to user source.
 /// Returns (combined_source, prelude_line_count).
 pub fn with_prelude(user_source: &str) -> (String, usize) {

@@ -28,6 +28,7 @@ pub struct TypeCheckOutput {
 }
 
 /// External type information to inject before type checking (for cross-module imports).
+#[derive(Default)]
 pub struct ExternalTypeInfo {
     pub defs: HashMap<axion_resolve::def_id::DefId, env::TypeInfo>,
     pub struct_fields: HashMap<axion_resolve::def_id::DefId, Vec<(String, ty::Ty)>>,

@@ -22,18 +22,26 @@ pub struct Export {
 ///
 /// For each module, builds the import list from dependency exports, then calls
 /// `axion_resolve::resolve()` with the correct `start_def_id` and imports.
+///
+/// `prelude_imports`: symbols to inject into every module (from the prelude module).
+/// `start_def_id_offset`: the starting DefId offset (accounts for prelude symbols).
 pub fn resolve_in_order(
     modules: &mut [Module],
     graph: &ModuleGraph,
     order: &[usize],
+    prelude_imports: &[(String, DefId, SymbolKind)],
+    start_def_id_offset: u32,
 ) -> (Vec<Vec<Export>>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut exports: Vec<Vec<Export>> = vec![Vec::new(); modules.len()];
-    let mut next_def_id: u32 = 0;
+    let mut next_def_id: u32 = start_def_id_offset;
 
     for &idx in order {
         // Build imports list from dependencies.
         let mut imports: Vec<(String, DefId, SymbolKind)> = Vec::new();
+
+        // Inject prelude imports first.
+        imports.extend_from_slice(prelude_imports);
         let mut imported_names: HashMap<String, usize> = HashMap::new(); // name → dep_idx
 
         for &dep_idx in &graph.dependencies[idx] {
