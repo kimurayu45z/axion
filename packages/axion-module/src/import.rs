@@ -254,6 +254,16 @@ fn validate_std_imports(
                     // Symbol found — collect as extra import (needed for
                     // non-auto-import modules whose symbols aren't in the prelude).
                     extra_imports.push((export.name.clone(), export.def_id, export.kind));
+
+                    // For struct/enum types, also import associated methods and constructors.
+                    if matches!(export.kind, SymbolKind::Struct | SymbolKind::Enum) {
+                        let prefix = format!("{}.", name);
+                        for assoc in mod_exports.iter() {
+                            if assoc.name.starts_with(&prefix) {
+                                extra_imports.push((assoc.name.clone(), assoc.def_id, assoc.kind));
+                            }
+                        }
+                    }
                 } else {
                     diagnostics.push(errors::unresolved_name(
                         name,

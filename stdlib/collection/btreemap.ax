@@ -1,13 +1,10 @@
-pub struct HashMap[K, V]
-    _keys: i64
-    _values: i64
-    _states: i64
+pub struct BTreeMap[K, V]
+    _root: i64
     _size: i64
-    _cap: i64
 
-impl[K, V] HashMap[K, V]
-    fn new() -> HashMap[K, V]
-        let m: HashMap[K, V] = HashMap #{_keys: 0, _values: 0, _states: 0, _size: 0, _cap: 0}
+impl[K, V] BTreeMap[K, V]
+    fn new() -> BTreeMap[K, V]
+        let m: BTreeMap[K, V] = BTreeMap #{_root: 0, _size: 0}
         m
 
     fn len(self) -> i64
@@ -20,13 +17,13 @@ impl[K, V] HashMap[K, V]
         {}
 
     fn get(self, key: K) -> Option[V]
-        Option.None
+        Option[V].None
 
     fn contains_key(self, key: K) -> bool
         false
 
     fn remove(mut self, key: K) -> Option[V]
-        Option.None
+        Option[V].None
 
     fn drop(mut self)
         {}

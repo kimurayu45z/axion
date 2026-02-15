@@ -8,22 +8,30 @@ pub const PRELUDE_RANGE: &str = include_str!("../../../stdlib/range.ax");
 pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/math.ax");
 pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/string.ax");
 pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/array.ax");
-pub const PRELUDE_HASHMAP: &str = include_str!("../../../stdlib/hashmap.ax");
 pub const PRELUDE_IO: &str = include_str!("../../../stdlib/io.ax");
 pub const PRELUDE_LOG: &str = include_str!("../../../stdlib/log.ax");
+
+/// Collection module sources (included in prelude for resolution, but not auto-imported).
+pub const COLLECTION_HASHMAP: &str = include_str!("../../../stdlib/collection/hashmap.ax");
+pub const COLLECTION_HASHSET: &str = include_str!("../../../stdlib/collection/hashset.ax");
+pub const COLLECTION_BTREEMAP: &str = include_str!("../../../stdlib/collection/btreemap.ax");
+pub const COLLECTION_BTREESET: &str = include_str!("../../../stdlib/collection/btreeset.ax");
 
 /// A boundary marker for one stdlib file within the combined prelude source.
 #[derive(Debug, Clone)]
 pub struct StdFileBoundary {
-    /// The module name (e.g. "math", "option").
+    /// The module name (e.g. "math", "option", "collection").
     pub name: String,
     /// Byte offset where this file starts in the combined source.
     pub start: usize,
     /// Byte offset where this file ends in the combined source.
     pub end: usize,
+    /// Whether symbols from this module are auto-imported into every user module.
+    /// If false, symbols are only available via explicit `use std.<module>.*` imports.
+    pub auto_import: bool,
 }
 
-/// A separately-parsed stdlib module (not part of the auto-import prelude).
+/// A separately-parsed stdlib module (not part of the prelude source at all).
 #[derive(Debug, Clone)]
 pub struct StdAuxModule {
     pub name: String,
@@ -40,26 +48,30 @@ pub fn prelude_source() -> String {
 /// Returns `(combined_source, boundaries)` where each boundary records which
 /// stdlib file occupies which byte range in the combined source.
 ///
-/// Only includes auto-import modules. Non-auto-import modules (io, log) are
-/// returned by `aux_std_modules()`.
+/// Includes ALL modules (auto-import and non-auto-import). The `auto_import`
+/// flag on each boundary controls whether symbols are injected automatically.
 pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
-    let files: &[(&str, &str)] = &[
-        ("ffi", PRELUDE_FFI),
-        ("number", PRELUDE_NUMBER),
-        ("option", PRELUDE_OPTION),
-        ("result", PRELUDE_RESULT),
-        ("iter", PRELUDE_ITER),
-        ("range", PRELUDE_RANGE),
-        ("math", PRELUDE_MATH),
-        ("string", PRELUDE_STRING),
-        ("array", PRELUDE_ARRAY),
-        ("hashmap", PRELUDE_HASHMAP),
+    // (name, source, auto_import)
+    let files: &[(&str, &str, bool)] = &[
+        ("ffi", PRELUDE_FFI, true),
+        ("number", PRELUDE_NUMBER, true),
+        ("option", PRELUDE_OPTION, true),
+        ("result", PRELUDE_RESULT, true),
+        ("iter", PRELUDE_ITER, true),
+        ("range", PRELUDE_RANGE, true),
+        ("math", PRELUDE_MATH, true),
+        ("string", PRELUDE_STRING, true),
+        ("array", PRELUDE_ARRAY, true),
+        ("collection", COLLECTION_HASHMAP, false),
+        ("collection", COLLECTION_HASHSET, false),
+        ("collection", COLLECTION_BTREEMAP, false),
+        ("collection", COLLECTION_BTREESET, false),
     ];
 
     let mut combined = String::new();
     let mut boundaries = Vec::new();
 
-    for (i, (name, src)) in files.iter().enumerate() {
+    for (i, (name, src, auto_import)) in files.iter().enumerate() {
         let start = combined.len();
         combined.push_str(src);
         if i + 1 < files.len() {
@@ -70,14 +82,15 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
             name: name.to_string(),
             start,
             end,
+            auto_import: *auto_import,
         });
     }
 
     (combined, boundaries)
 }
 
-/// Returns stdlib modules that are NOT auto-imported into every module.
-/// These are available only via explicit `use std.<module>.*` imports.
+/// Returns stdlib modules that are NOT part of the prelude source at all.
+/// These are parsed separately and available only via explicit `use std.<module>.*`.
 pub fn aux_std_modules() -> Vec<StdAuxModule> {
     vec![
         StdAuxModule { name: "io".to_string(), source: PRELUDE_IO },
@@ -85,12 +98,14 @@ pub fn aux_std_modules() -> Vec<StdAuxModule> {
     ]
 }
 
-/// Prepend the prelude to user source.
+/// Prepend the prelude to user source (auto-import modules only).
 /// Returns (combined_source, prelude_line_count).
 pub fn with_prelude(user_source: &str) -> (String, usize) {
     let combined = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT, PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING, PRELUDE_ARRAY, PRELUDE_HASHMAP, user_source
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
+        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING,
+        PRELUDE_ARRAY, user_source
     );
     let prelude_lines = PRELUDE_FFI.lines().count()
         + PRELUDE_NUMBER.lines().count()
@@ -101,7 +116,35 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
         + PRELUDE_MATH.lines().count()
         + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
-        + PRELUDE_HASHMAP.lines().count()
-        + 10;
+        + 9;
+    (combined, prelude_lines)
+}
+
+/// Prepend the prelude AND collection sources to user source.
+/// Used by tests that need HashMap/HashSet/BTreeMap/BTreeSet.
+pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
+    let combined = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
+        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING,
+        PRELUDE_ARRAY,
+        COLLECTION_HASHMAP, COLLECTION_HASHSET,
+        COLLECTION_BTREEMAP, COLLECTION_BTREESET,
+        user_source
+    );
+    let prelude_lines = PRELUDE_FFI.lines().count()
+        + PRELUDE_NUMBER.lines().count()
+        + PRELUDE_OPTION.lines().count()
+        + PRELUDE_RESULT.lines().count()
+        + PRELUDE_ITER.lines().count()
+        + PRELUDE_RANGE.lines().count()
+        + PRELUDE_MATH.lines().count()
+        + PRELUDE_STRING.lines().count()
+        + PRELUDE_ARRAY.lines().count()
+        + COLLECTION_HASHMAP.lines().count()
+        + COLLECTION_HASHSET.lines().count()
+        + COLLECTION_BTREEMAP.lines().count()
+        + COLLECTION_BTREESET.lines().count()
+        + 13;
     (combined, prelude_lines)
 }

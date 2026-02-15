@@ -76,6 +76,11 @@ fn compile_and_run_with_prelude(src: &str) -> RunResult {
     compile_and_run_raw(&combined)
 }
 
+fn compile_and_run_with_collections(src: &str) -> RunResult {
+    let (combined, _) = axion_resolve::prelude::with_prelude_and_collections(src);
+    compile_and_run_raw(&combined)
+}
+
 #[allow(dead_code)]
 fn compile_ir(src: &str) -> String {
     let (sf, _) = axion_parser::parse(src, "test.ax");
@@ -89,6 +94,12 @@ fn compile_ir(src: &str) -> String {
 
 fn compile_ir_with_prelude(src: &str) -> String {
     let (combined, _) = axion_resolve::prelude::with_prelude(src);
+    compile_ir(&combined)
+}
+
+#[allow(dead_code)]
+fn compile_ir_with_collections(src: &str) -> String {
+    let (combined, _) = axion_resolve::prelude::with_prelude_and_collections(src);
     compile_ir(&combined)
 }
 
@@ -2423,6 +2434,18 @@ fn main() -> i64
 }
 
 #[test]
+fn compile_hashmap_len_after_insert() {
+    let src = "\
+fn main() -> i64
+    let mut m = HashMap[i64, i64].new()
+    m.insert(1, 42)
+    m.len()
+";
+    let result = compile_and_run_with_collections(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
 fn compile_hashmap_insert_get() {
     let src = "\
 fn main() -> i64
@@ -2431,7 +2454,7 @@ fn main() -> i64
     let v = m.get(1)
     v.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_collections(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -2445,7 +2468,7 @@ fn main() -> i64
     let v = m.get(1)
     v.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_collections(src);
     assert_eq!(result.exit_code, 20);
 }
 
@@ -2463,7 +2486,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_collections(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2480,7 +2503,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_collections(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -2502,8 +2525,43 @@ fn main() -> i64
     let v = m.get(10)
     v.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_collections(src);
     assert_eq!(result.exit_code, 10);
+}
+
+// ===== Collection types (HashSet, BTreeMap, BTreeSet) =====
+
+#[test]
+fn compile_hashset_new() {
+    let src = "\
+fn main() -> i64
+    let s = HashSet[i64].new()
+    s.len()
+";
+    let result = compile_and_run_with_collections(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_btreemap_new() {
+    let src = "\
+fn main() -> i64
+    let m = BTreeMap[i64, i64].new()
+    m.len()
+";
+    let result = compile_and_run_with_collections(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_btreeset_new() {
+    let src = "\
+fn main() -> i64
+    let s = BTreeSet[i64].new()
+    s.len()
+";
+    let result = compile_and_run_with_collections(src);
+    assert_eq!(result.exit_code, 0);
 }
 
 // ===== Handle expression codegen =====

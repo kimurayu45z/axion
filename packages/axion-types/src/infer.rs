@@ -515,15 +515,18 @@ impl<'a> InferCtx<'a> {
         let is_type_access = self.is_type_expr(inner);
 
         // Try to find a method/constructor: look up "TypeName.name" in values.
+        // Search both local symbols and imported symbols (for cross-module types).
         if let Some(type_name) = self.get_type_name(&resolved, inner) {
             let key = format!("{type_name}.{name}");
-            let method_sym = self.resolved.symbols.iter().find(|s| {
-                s.name == key
-                    && matches!(
-                        s.kind,
-                        SymbolKind::Method | SymbolKind::Constructor
-                    )
-            });
+            let method_sym = self.resolved.symbols.iter()
+                .chain(self.resolved.imported_symbols.iter())
+                .find(|s| {
+                    s.name == key
+                        && matches!(
+                            s.kind,
+                            SymbolKind::Method | SymbolKind::Constructor
+                        )
+                });
             if let Some(sym) = method_sym {
                 if let Some(info) = self.env.defs.get(&sym.def_id) {
                     let mut method_ty = info.ty.clone();
@@ -763,19 +766,18 @@ impl<'a> InferCtx<'a> {
     }
 
     /// Get the type name for method/constructor lookups.
+    /// Searches both local and imported symbols.
     fn get_type_name(&self, ty: &Ty, expr: &Expr) -> Option<String> {
         match ty {
             Ty::Struct { def_id, .. } => {
-                self.resolved
-                    .symbols
-                    .iter()
+                self.resolved.symbols.iter()
+                    .chain(self.resolved.imported_symbols.iter())
                     .find(|s| s.def_id == *def_id)
                     .map(|s| s.name.clone())
             }
             Ty::Enum { def_id, .. } => {
-                self.resolved
-                    .symbols
-                    .iter()
+                self.resolved.symbols.iter()
+                    .chain(self.resolved.imported_symbols.iter())
                     .find(|s| s.def_id == *def_id)
                     .map(|s| s.name.clone())
             }
@@ -784,7 +786,9 @@ impl<'a> InferCtx<'a> {
                 // E.g., `Point.origin()` where `Point` resolves to the Struct DefId.
                 if let ExprKind::Ident(name) = &expr.kind {
                     if let Some(&def_id) = self.resolved.resolutions.get(&expr.span.start) {
-                        let sym = self.resolved.symbols.iter().find(|s| s.def_id == def_id);
+                        let sym = self.resolved.symbols.iter()
+                            .chain(self.resolved.imported_symbols.iter())
+                            .find(|s| s.def_id == def_id);
                         if let Some(sym) = sym {
                             if matches!(sym.kind, SymbolKind::Struct | SymbolKind::Enum) {
                                 return Some(name.clone());
@@ -815,35 +819,61 @@ impl<'a> InferCtx<'a> {
             _ => return subst,
         };
 
-        let parent_sym = self.resolved.symbols.iter().find(|s| s.def_id == parent_def_id);
-        let Some(parent_sym) = parent_sym else { return subst };
+        let parent_sym = self.resolved.symbols.iter()
+            .chain(self.resolved.imported_symbols.iter())
+            .find(|s| s.def_id == parent_def_id);
 
-        // Get parent type parameter names (ordered).
-        let parent_type_param_names: Vec<String> = self.resolved.symbols.iter()
-            .filter(|s| {
-                s.kind == SymbolKind::TypeParam
-                    && s.name != "Self"
-                    && s.span.start >= parent_sym.span.start
-                    && s.span.end <= parent_sym.span.end
-            })
-            .map(|s| s.name.clone())
-            .collect();
-
-        // Collect all Ty::Param def_ids used in the method's function type.
+        // Get the method type info.
         let method_info = self.env.defs.get(&method_sym.def_id);
         let Some(method_info) = method_info else { return subst };
-        let mut param_def_ids = Vec::new();
-        collect_param_def_ids(&method_info.ty, &mut param_def_ids);
 
-        // For each param DefId, look up its name and match against parent type params.
-        for def_id in &param_def_ids {
-            let param_sym = self.resolved.symbols.iter().find(|s| {
-                s.def_id == *def_id && s.kind == SymbolKind::TypeParam
-            });
-            if let Some(ps) = param_sym {
-                if let Some(idx) = parent_type_param_names.iter().position(|n| *n == ps.name) {
-                    if idx < type_args.len() {
-                        subst.insert(*def_id, type_args[idx].clone());
+        if let Some(parent_sym) = parent_sym {
+            if parent_sym.span != axion_syntax::Span::dummy() {
+                // Local symbol: use span-based type param resolution.
+                let parent_type_param_names: Vec<String> = self.resolved.symbols.iter()
+                    .filter(|s| {
+                        s.kind == SymbolKind::TypeParam
+                            && s.name != "Self"
+                            && s.span.start >= parent_sym.span.start
+                            && s.span.end <= parent_sym.span.end
+                    })
+                    .map(|s| s.name.clone())
+                    .collect();
+
+                let mut param_def_ids = Vec::new();
+                collect_param_def_ids(&method_info.ty, &mut param_def_ids);
+
+                for def_id in &param_def_ids {
+                    let param_sym = self.resolved.symbols.iter().find(|s| {
+                        s.def_id == *def_id && s.kind == SymbolKind::TypeParam
+                    });
+                    if let Some(ps) = param_sym {
+                        if let Some(idx) = parent_type_param_names.iter().position(|n| *n == ps.name) {
+                            if idx < type_args.len() {
+                                subst.insert(*def_id, type_args[idx].clone());
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Imported symbol: extract type param DefIds from the method's self parameter type.
+                // The self parameter (first param of a method's Fn type) should be
+                // Struct(def_id, [Param(p1), Param(p2), ...]) — zip those with type_args.
+                if let Ty::Fn { params, .. } = &method_info.ty {
+                    if let Some(self_param) = params.first() {
+                        let self_type_args = match self_param {
+                            Ty::Struct { type_args: ta, .. } | Ty::Enum { type_args: ta, .. } => ta,
+                            Ty::Ref(inner) => match inner.as_ref() {
+                                Ty::Struct { type_args: ta, .. } | Ty::Enum { type_args: ta, .. } => ta,
+                                _ => return subst,
+                            },
+                            _ => return subst,
+                        };
+                        for (param_ty, arg_ty) in self_type_args.iter().zip(type_args.iter()) {
+                            if let Ty::Param(param_def_id) = param_ty {
+                                subst.insert(*param_def_id, arg_ty.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -857,7 +887,9 @@ impl<'a> InferCtx<'a> {
         match &expr.kind {
             ExprKind::Ident(_) => {
                 if let Some(&def_id) = self.resolved.resolutions.get(&expr.span.start) {
-                    let sym = self.resolved.symbols.iter().find(|s| s.def_id == def_id);
+                    let sym = self.resolved.symbols.iter()
+                        .chain(self.resolved.imported_symbols.iter())
+                        .find(|s| s.def_id == def_id);
                     if let Some(sym) = sym {
                         return matches!(
                             sym.kind,

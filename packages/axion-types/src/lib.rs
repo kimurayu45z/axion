@@ -168,7 +168,7 @@ pub fn type_check_with_imports(
                 // Intrinsic receiver types (Array, String, HashMap) are trusted stdlib.
                 // Grant implicit effects so their internal Ptr/malloc use doesn't error.
                 // These are NOT registered in fn_effects, so they don't propagate to callers.
-                if matches!(receiver_name.as_str(), "Array" | "String" | "HashMap") {
+                if matches!(receiver_name.as_str(), "Array" | "String" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet") {
                     for eff in &["Unsafe", "Alloc", "IO"] {
                         if !current_effects.iter().any(|e| e == eff) {
                             current_effects.push(eff.to_string());
@@ -200,7 +200,7 @@ pub fn type_check_with_imports(
                 // whose method bodies are stubs replaced by codegen intrinsics.
                 let is_intrinsic_receiver = matches!(
                     receiver_name.as_str(),
-                    "Array" | "String" | "HashMap"
+                    "Array" | "String" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet"
                 );
 
                 if m.return_type.is_some() && !is_intrinsic_receiver {
@@ -244,7 +244,7 @@ pub fn type_check_with_imports(
 
                 // Trusted stdlib constructors get implicit effects.
                 let mut current_effects = Vec::new();
-                if matches!(c.type_name.as_str(), "Array" | "String" | "HashMap") {
+                if matches!(c.type_name.as_str(), "Array" | "String" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet") {
                     for eff in &["Unsafe", "Alloc", "IO"] {
                         current_effects.push(eff.to_string());
                     }

@@ -73,7 +73,8 @@ fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
     let (prelude_ast, _) = axion_parser::parse(&src, "<prelude>");
     let (prelude_resolved, _) = axion_resolve::resolve_single(&prelude_ast, "<prelude>", &src);
 
-    // 2. Extract prelude exports: all top-level symbols that user modules may need.
+    // 2. Extract prelude exports: only auto-import module symbols.
+    //    Non-auto-import modules (collection) are available via `use std.*` only.
     let prelude_imports: Vec<(String, DefId, SymbolKind)> = prelude_resolved
         .symbols
         .iter()
@@ -89,6 +90,11 @@ fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
                     | SymbolKind::Method
                     | SymbolKind::ExternFn
             )
+        })
+        .filter(|s| {
+            // Exclude symbols from non-auto-import modules.
+            let start = s.span.start as usize;
+            !boundaries.iter().any(|b| start >= b.start && start < b.end && !b.auto_import)
         })
         .map(|s| (s.name.clone(), s.def_id, s.kind))
         .collect();
@@ -114,6 +120,8 @@ fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
                         | SymbolKind::Struct
                         | SymbolKind::Enum
                         | SymbolKind::ExternFn
+                        | SymbolKind::Constructor
+                        | SymbolKind::Method
                 ) && s.span != axion_syntax::Span::dummy()
             })
             .map(|s| Export {

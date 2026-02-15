@@ -1,0 +1,26 @@
+pub struct BTreeSet[T]
+    _root: i64
+    _size: i64
+
+impl[T] BTreeSet[T]
+    fn new() -> BTreeSet[T]
+        let s: BTreeSet[T] = BTreeSet #{_root: 0, _size: 0}
+        s
+
+    fn len(self) -> i64
+        self._size
+
+    fn is_empty(self) -> bool
+        self._size == 0
+
+    fn insert(mut self, key: T) -> bool
+        false
+
+    fn contains(self, key: T) -> bool
+        false
+
+    fn remove(mut self, key: T) -> bool
+        false
+
+    fn drop(mut self)
+        {}

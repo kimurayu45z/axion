@@ -318,3 +318,27 @@ fn std_import_nonexistent_module() {
         "expected E0600 unresolved_module, got: {errs:?}"
     );
 }
+
+// -----------------------------------------------------------------------
+// std.collection imports
+// -----------------------------------------------------------------------
+
+#[test]
+fn std_import_collection_hashmap() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.collection.HashMap\n\nfn main()\n    let m = HashMap[i64, i64].new()\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+#[test]
+fn std_import_collection_grouped() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "use std.collection.{HashMap, HashSet}\n\nfn main()\n    let m = HashMap[i64, i64].new()\n    let s = HashSet[i64].new()\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}

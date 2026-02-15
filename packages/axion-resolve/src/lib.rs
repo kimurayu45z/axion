@@ -25,6 +25,8 @@ pub struct ResolveOutput {
     pub scope_tree: ScopeTree,
     /// Resolution map: `Span.start` → `DefId` for each resolved reference.
     pub resolutions: HashMap<u32, DefId>,
+    /// Symbols imported from other modules (kept separate to avoid affecting DefId counting).
+    pub imported_symbols: Vec<Symbol>,
 }
 
 /// Internal mutable context threaded through the resolution passes.
@@ -141,10 +143,26 @@ pub fn resolve(
     resolver::resolve_all(&mut ctx, source_file, root);
 
     let diagnostics = ctx.diagnostics;
+
+    // Build imported_symbols list for cross-module method/constructor lookup.
+    let imported_symbols: Vec<Symbol> = imports
+        .iter()
+        .map(|(name, def_id, kind)| Symbol {
+            def_id: *def_id,
+            name: name.clone(),
+            kind: *kind,
+            vis: Visibility::Pub,
+            span: Span::dummy(),
+            parent: None,
+            used: true,
+        })
+        .collect();
+
     let output = ResolveOutput {
         symbols: ctx.symbols,
         scope_tree: ctx.scope_tree,
         resolutions: ctx.resolutions,
+        imported_symbols,
     };
     (output, diagnostics)
 }

@@ -42,11 +42,253 @@ pub fn collect_instantiations(
         }
     }
 
+    // Auto-collect transitive method calls: when a method on a generic type
+    // calls other methods on `self`, those also need to be specialized with
+    // the same type_args.
+    collect_transitive_self_calls(&mut result, &mut seen, source_file, resolved);
+
     // Auto-collect `drop` method specializations for any generic type whose
     // methods were instantiated, since `drop` is called implicitly at cleanup.
     collect_implicit_drop(&mut result, &mut seen, resolved);
 
     result
+}
+
+/// Iteratively discover transitive method calls on `self` within method bodies.
+///
+/// When `HashMap.insert with [i64, i64]` is collected, and `insert`'s body
+/// calls `self._grow()`, this function ensures `HashMap._grow with [i64, i64]`
+/// is also collected. Iterates to a fixed point.
+fn collect_transitive_self_calls(
+    result: &mut Vec<Instantiation>,
+    seen: &mut HashSet<SpecKey>,
+    source_file: &SourceFile,
+    resolved: &ResolveOutput,
+) {
+    let mut i = 0;
+    while i < result.len() {
+        let inst = result[i].clone();
+        i += 1;
+
+        // Find the symbol for this instantiation.
+        let sym = match resolved.symbols.iter().find(|s| s.def_id == inst.fn_def_id) {
+            Some(s) if matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor) => s,
+            _ => continue,
+        };
+
+        // Extract the type name from "TypeName.method_name".
+        let type_name = match sym.name.find('.') {
+            Some(pos) => &sym.name[..pos],
+            None => continue,
+        };
+
+        // Find the method's AST node by matching on receiver type name and method name.
+        let method_name = &sym.name[sym.name.find('.').unwrap() + 1..];
+        let method_body = source_file.items.iter().find_map(|item| {
+            if let ItemKind::Method(m) = &item.kind {
+                let recv_name = type_expr_name_simple(&m.receiver_type);
+                if recv_name == type_name && m.name == method_name {
+                    return Some(&m.body);
+                }
+            }
+            None
+        });
+
+        let body = match method_body {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Find all method calls on `self` in this method's body.
+        let self_calls = find_self_method_calls(body);
+        for call_name in &self_calls {
+            let method_key = format!("{}.{}", type_name, call_name);
+            let method_sym = resolved.symbols.iter().find(|s| {
+                s.name == method_key
+                    && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+            });
+            if let Some(method_sym) = method_sym {
+                let key = SpecKey {
+                    fn_def_id: method_sym.def_id,
+                    type_args: inst.type_args.clone(),
+                };
+                if !seen.contains(&key) {
+                    seen.insert(key);
+                    result.push(Instantiation {
+                        fn_def_id: method_sym.def_id,
+                        type_args: inst.type_args.clone(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Extract a simple name from a TypeExpr (for matching receiver types).
+fn type_expr_name_simple(te: &TypeExpr) -> &str {
+    match te {
+        TypeExpr::Named { name, .. } => name.as_str(),
+        _ => "",
+    }
+}
+
+/// Find all method names called on `self` in a list of statements.
+fn find_self_method_calls(stmts: &[Stmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for stmt in stmts {
+        find_self_calls_in_stmt(stmt, &mut names);
+    }
+    names
+}
+
+fn find_self_calls_in_stmt(stmt: &Stmt, names: &mut Vec<String>) {
+    match &stmt.kind {
+        StmtKind::Let { value, .. } => find_self_calls_in_expr(value, names),
+        StmtKind::LetPattern { value, .. } => find_self_calls_in_expr(value, names),
+        StmtKind::Assign { target, value } => {
+            find_self_calls_in_expr(target, names);
+            find_self_calls_in_expr(value, names);
+        }
+        StmtKind::Expr(e) => find_self_calls_in_expr(e, names),
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                find_self_calls_in_expr(e, names);
+            }
+        }
+        StmtKind::Break(opt) => {
+            if let Some(e) = opt {
+                find_self_calls_in_expr(e, names);
+            }
+        }
+        StmtKind::Continue => {}
+        StmtKind::Assert { cond, message } => {
+            find_self_calls_in_expr(cond, names);
+            if let Some(m) = message {
+                find_self_calls_in_expr(m, names);
+            }
+        }
+    }
+}
+
+fn find_self_calls_in_expr(expr: &Expr, names: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::Call { func, args } => {
+            // Check if this is a self.method_name() call.
+            if let ExprKind::Field { expr: inner, name } = &func.kind {
+                if is_self_expr(inner) {
+                    names.push(name.clone());
+                }
+            }
+            find_self_calls_in_expr(func, names);
+            for arg in args {
+                find_self_calls_in_expr(&arg.expr, names);
+            }
+        }
+        ExprKind::BinOp { lhs, rhs, .. } => {
+            find_self_calls_in_expr(lhs, names);
+            find_self_calls_in_expr(rhs, names);
+        }
+        ExprKind::UnaryOp { operand, .. } => {
+            find_self_calls_in_expr(operand, names);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            find_self_calls_in_expr(cond, names);
+            for s in then_branch {
+                find_self_calls_in_stmt(s, names);
+            }
+            if let Some(els) = else_branch {
+                for s in els {
+                    find_self_calls_in_stmt(s, names);
+                }
+            }
+        }
+        ExprKind::While { cond, body } => {
+            find_self_calls_in_expr(cond, names);
+            for s in body {
+                find_self_calls_in_stmt(s, names);
+            }
+        }
+        ExprKind::Block(stmts) => {
+            for s in stmts {
+                find_self_calls_in_stmt(s, names);
+            }
+        }
+        ExprKind::Match { expr: scrutinee, arms } => {
+            find_self_calls_in_expr(scrutinee, names);
+            for arm in arms {
+                for s in &arm.body {
+                    find_self_calls_in_stmt(s, names);
+                }
+            }
+        }
+        ExprKind::For { iter, body, .. } => {
+            find_self_calls_in_expr(iter, names);
+            for s in body {
+                find_self_calls_in_stmt(s, names);
+            }
+        }
+        ExprKind::Closure { body, .. } => {
+            for s in body {
+                find_self_calls_in_stmt(s, names);
+            }
+        }
+        ExprKind::Field { expr: inner, .. }
+        | ExprKind::Ref(inner)
+        | ExprKind::Try(inner)
+        | ExprKind::Await(inner) => {
+            find_self_calls_in_expr(inner, names);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for f in fields {
+                find_self_calls_in_expr(&f.value, names);
+            }
+        }
+        ExprKind::TupleLit(elems) | ExprKind::SetLit(elems) => {
+            for e in elems {
+                find_self_calls_in_expr(e, names);
+            }
+        }
+        ExprKind::Range { start, end } => {
+            if let Some(s) = start { find_self_calls_in_expr(s, names); }
+            if let Some(e) = end { find_self_calls_in_expr(e, names); }
+        }
+        ExprKind::StringInterp { parts } => {
+            for part in parts {
+                if let StringInterpPart::Expr(e) = part {
+                    find_self_calls_in_expr(e, names);
+                }
+            }
+        }
+        ExprKind::MapLit(entries) => {
+            for entry in entries {
+                find_self_calls_in_expr(&entry.key, names);
+                find_self_calls_in_expr(&entry.value, names);
+            }
+        }
+        ExprKind::Handle { expr: inner, arms } => {
+            find_self_calls_in_expr(inner, names);
+            for arm in arms {
+                for s in &arm.body {
+                    find_self_calls_in_stmt(s, names);
+                }
+            }
+        }
+        ExprKind::Assert { cond, message } => {
+            find_self_calls_in_expr(cond, names);
+            if let Some(m) = message {
+                find_self_calls_in_expr(m, names);
+            }
+        }
+        ExprKind::Cast { expr: inner, .. } => {
+            find_self_calls_in_expr(inner, names);
+        }
+        _ => {}
+    }
+}
+
+/// Check if an expression is `self`.
+fn is_self_expr(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if name == "self")
 }
 
 /// For every method instantiation on a generic type, ensure the type's `drop`
