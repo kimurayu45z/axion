@@ -1,0 +1,19 @@
+// Ptr[T] built-in methods (LSP/IDE stub)
+//
+// Ptr[T] is a language built-in raw pointer type (LLVM opaque ptr).
+// These methods are implemented as codegen intrinsics and cannot be overridden.
+//
+// fn null() -> Ptr[T]
+//     Returns a null pointer. Called as Ptr[T].null().
+//
+// fn is_null(self) -> bool
+//     Returns true if the pointer is null.
+//
+// fn read(self) -> T
+//     Reads the value at the pointer address.
+//
+// fn write(self, value: T)
+//     Writes a value to the pointer address.
+//
+// fn offset(self, n: i64) -> Ptr[T]
+//     Returns a pointer offset by n elements (pointer arithmetic).
