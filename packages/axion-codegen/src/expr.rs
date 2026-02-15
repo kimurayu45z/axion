@@ -357,6 +357,8 @@ fn compile_binop<'ctx>(
             ty = axion_mono::specialize::substitute(&ty, &ctx.current_subst);
         }
         ty
+    } else if matches!(&lhs.kind, ExprKind::StringLit(_) | ExprKind::StringInterp { .. }) {
+        Ty::Prim(PrimTy::Str)
     } else {
         get_expr_ty(ctx, lhs)
     };
@@ -379,6 +381,11 @@ fn compile_binop<'ctx>(
         }
     }
 
+    // str + str → String (concatenation)
+    if matches!(op, BinOp::Add) && matches!(lhs_ty, Ty::Prim(PrimTy::Str)) {
+        return compile_str_concat(ctx, lhs_val, rhs_val);
+    }
+
     // String == / != → memcmp comparison
     if matches!(op, BinOp::Eq | BinOp::NotEq) {
         if let Some(name) = get_type_name_for_method_ctx(ctx, &lhs_ty) {
@@ -386,6 +393,11 @@ fn compile_binop<'ctx>(
                 return compile_string_compare(ctx, op, lhs_val, rhs_val);
             }
         }
+    }
+
+    // str == / != → memcmp comparison
+    if matches!(op, BinOp::Eq | BinOp::NotEq) && matches!(lhs_ty, Ty::Prim(PrimTy::Str)) {
+        return compile_str_compare(ctx, op, lhs_val, rhs_val);
     }
 
     if is_float {
@@ -700,6 +712,8 @@ fn compile_call<'ctx>(
                     })
                 })
                 .unwrap_or_else(|| get_expr_ty(ctx, inner))
+        } else if matches!(&inner.kind, ExprKind::StringLit(_) | ExprKind::StringInterp { .. }) {
+            Ty::Prim(PrimTy::Str)
         } else {
             get_expr_ty(ctx, inner)
         };
@@ -721,6 +735,16 @@ fn compile_call<'ctx>(
                     "is_empty" => return compile_string_is_empty(ctx, inner),
                     "push" => return compile_string_push(ctx, inner, args),
                     "as_str" => return compile_string_as_str(ctx, inner),
+                    "byte_at" => return compile_string_byte_at(ctx, inner, args),
+                    "contains" => return compile_string_contains(ctx, inner, args),
+                    "starts_with" => return compile_string_starts_with(ctx, inner, args),
+                    "ends_with" => return compile_string_ends_with(ctx, inner, args),
+                    "substring" => return compile_string_substring(ctx, inner, args),
+                    "clear" => return compile_string_clear(ctx, inner),
+                    "repeat" => return compile_string_repeat(ctx, inner, args),
+                    "trim" => return compile_string_trim(ctx, inner),
+                    "trim_start" => return compile_string_trim_start(ctx, inner),
+                    "trim_end" => return compile_string_trim_end(ctx, inner),
                     _ => {}
                 }
             }
@@ -841,6 +865,24 @@ fn compile_call<'ctx>(
                     let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
                     return Some(cmp.into());
                 }
+                _ => {}
+            }
+        }
+
+        // str built-in method calls
+        if let Ty::Prim(PrimTy::Str) = inner_ty {
+            match field_name.as_str() {
+                "len" => return compile_str_len(ctx, inner),
+                "is_empty" => return compile_str_is_empty(ctx, inner),
+                "byte_at" => return compile_str_byte_at(ctx, inner, args),
+                "contains" => return compile_str_contains(ctx, inner, args),
+                "starts_with" => return compile_str_starts_with(ctx, inner, args),
+                "ends_with" => return compile_str_ends_with(ctx, inner, args),
+                "slice" | "substring" => return compile_str_slice(ctx, inner, args),
+                "to_string" => return compile_str_to_string(ctx, inner),
+                "trim" => return compile_str_trim(ctx, inner),
+                "trim_start" => return compile_str_trim_start(ctx, inner),
+                "trim_end" => return compile_str_trim_end(ctx, inner),
                 _ => {}
             }
         }
@@ -3152,6 +3194,599 @@ fn compile_string_as_str<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Opti
     result = ctx.builder.build_insert_value(result, ptr, 0, "as_ptr").unwrap().into_struct_value();
     result = ctx.builder.build_insert_value(result, len, 1, "as_len").unwrap().into_struct_value();
     Some(result.into())
+}
+
+// ---------------------------------------------------------------------------
+// str built-in methods
+// ---------------------------------------------------------------------------
+
+/// Helper: extract (ptr, len) from a str value.
+fn extract_str_parts<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    str_val: BasicValueEnum<'ctx>,
+) -> (inkwell::values::PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+    let sv = str_val.into_struct_value();
+    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap().into_pointer_value();
+    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap().into_int_value();
+    (ptr, len)
+}
+
+/// Helper: build a str struct { ptr, len }.
+fn build_str_struct<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    len: inkwell::values::IntValue<'ctx>,
+) -> BasicValueEnum<'ctx> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let str_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into()], false);
+    let mut result = str_ty.get_undef();
+    result = ctx.builder.build_insert_value(result, ptr, 0, "s_ptr").unwrap().into_struct_value();
+    result = ctx.builder.build_insert_value(result, len, 1, "s_len").unwrap().into_struct_value();
+    result.into()
+}
+
+/// Helper: extract (ptr, len) from a String value (fields 0 and 1).
+fn extract_string_as_str_parts<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    string_val: BasicValueEnum<'ctx>,
+) -> (inkwell::values::PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+    let sv = string_val.into_struct_value();
+    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap().into_pointer_value();
+    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap().into_int_value();
+    (ptr, len)
+}
+
+/// Compile `s.len()` for str → extract field 1
+fn compile_str_len<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (_, len) = extract_str_parts(ctx, val);
+    Some(len.into())
+}
+
+/// Compile `s.is_empty()` for str → field 1 == 0
+fn compile_str_is_empty<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (_, len) = extract_str_parts(ctx, val);
+    let zero = ctx.context.i64_type().const_zero();
+    let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
+    Some(cmp.into())
+}
+
+/// Compile `s.byte_at(i)` for str → GEP + load i8 + zext to i64
+fn compile_str_byte_at<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, _) = extract_str_parts(ctx, val);
+    let idx = compile_expr(ctx, &args[0].expr)?.into_int_value();
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[idx], "byte_ptr").unwrap()
+    };
+    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap().into_int_value();
+    let result = ctx.builder.build_int_z_extend(byte, ctx.context.i64_type(), "byte_i64").unwrap();
+    Some(result.into())
+}
+
+/// Compile `s.slice(start, end)` for str → GEP + new {ptr, len}
+fn compile_str_slice<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, _) = extract_str_parts(ctx, val);
+    let start = compile_expr(ctx, &args[0].expr)?.into_int_value();
+    let end = compile_expr(ctx, &args[1].expr)?.into_int_value();
+    let new_len = ctx.builder.build_int_sub(end, start, "slice_len").unwrap();
+    let new_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[start], "slice_ptr").unwrap()
+    };
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+/// Compile `a == b` / `a != b` for str via memcmp.
+fn compile_str_compare<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    op: BinOp,
+    lhs_val: BasicValueEnum<'ctx>,
+    rhs_val: BasicValueEnum<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let memcmp = ctx.module.get_function("memcmp")?;
+    let (lhs_ptr, lhs_len) = extract_str_parts(ctx, lhs_val);
+    let (rhs_ptr, rhs_len) = extract_str_parts(ctx, rhs_val);
+
+    let len_equal = ctx.builder.build_int_compare(IntPredicate::EQ, lhs_len, rhs_len, "len_eq").unwrap();
+    let cmp_result = ctx.builder.build_call(
+        memcmp,
+        &[lhs_ptr.into(), rhs_ptr.into(), lhs_len.into()],
+        "memcmp_ret",
+    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+    let zero_i32 = ctx.context.i32_type().const_zero();
+    let content_equal = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "content_eq").unwrap();
+    let result = ctx.builder.build_and(len_equal, content_equal, "str_eq").unwrap();
+
+    match op {
+        BinOp::Eq => Some(result.into()),
+        BinOp::NotEq => Some(ctx.builder.build_not(result, "str_ne").unwrap().into()),
+        _ => unreachable!(),
+    }
+}
+
+/// Compile `a + b` for str values → allocate new String buffer, memcpy both sides.
+fn compile_str_concat<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    lhs_val: BasicValueEnum<'ctx>,
+    rhs_val: BasicValueEnum<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let malloc = ctx.module.get_function("malloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    let (lhs_ptr, lhs_len) = extract_str_parts(ctx, lhs_val);
+    let (rhs_ptr, rhs_len) = extract_str_parts(ctx, rhs_val);
+
+    let new_len = ctx.builder.build_int_add(lhs_len, rhs_len, "new_len").unwrap();
+    let buf = ctx.builder.build_call(malloc, &[new_len.into()], "concat_buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+    ctx.builder.build_call(memcpy, &[buf.into(), lhs_ptr.into(), lhs_len.into()], "").unwrap();
+    let dst = unsafe { ctx.builder.build_gep(ctx.context.i8_type(), buf, &[lhs_len], "concat_dst").unwrap() };
+    ctx.builder.build_call(memcpy, &[dst.into(), rhs_ptr.into(), rhs_len.into()], "").unwrap();
+
+    let mut sv = string_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, buf, 0, "cat_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, new_len, 1, "cat_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, new_len, 2, "cat_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Compile `s.contains(needle)` for str — loop + memcmp.
+fn compile_str_contains_impl<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    haystack_ptr: inkwell::values::PointerValue<'ctx>,
+    haystack_len: inkwell::values::IntValue<'ctx>,
+    needle_ptr: inkwell::values::PointerValue<'ctx>,
+    needle_len: inkwell::values::IntValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let memcmp = ctx.module.get_function("memcmp")?;
+    let i64_ty = ctx.context.i64_type();
+    let i1_ty = ctx.context.bool_type();
+
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let check_empty_bb = ctx.context.append_basic_block(fn_val, "contains_check_empty");
+    let loop_header_bb = ctx.context.append_basic_block(fn_val, "contains_loop_header");
+    let loop_body_bb = ctx.context.append_basic_block(fn_val, "contains_loop_body");
+    let found_bb = ctx.context.append_basic_block(fn_val, "contains_found");
+    let not_found_bb = ctx.context.append_basic_block(fn_val, "contains_not_found");
+    let merge_bb = ctx.context.append_basic_block(fn_val, "contains_merge");
+
+    ctx.builder.build_unconditional_branch(check_empty_bb).unwrap();
+
+    // Empty needle → always true
+    ctx.builder.position_at_end(check_empty_bb);
+    let needle_empty = ctx.builder.build_int_compare(IntPredicate::EQ, needle_len, i64_ty.const_zero(), "needle_empty").unwrap();
+    ctx.builder.build_conditional_branch(needle_empty, found_bb, loop_header_bb).unwrap();
+
+    // Loop header: i = 0..=(haystack_len - needle_len)
+    ctx.builder.position_at_end(loop_header_bb);
+    let phi_i = ctx.builder.build_phi(i64_ty, "i").unwrap();
+    phi_i.add_incoming(&[(&i64_ty.const_zero(), check_empty_bb)]);
+    let i = phi_i.as_basic_value().into_int_value();
+
+    // max_i = haystack_len - needle_len + 1
+    let max_i = ctx.builder.build_int_sub(haystack_len, needle_len, "max_i_sub").unwrap();
+    let max_i = ctx.builder.build_int_add(max_i, i64_ty.const_int(1, false), "max_i").unwrap();
+    let cond = ctx.builder.build_int_compare(IntPredicate::ULT, i, max_i, "loop_cond").unwrap();
+    ctx.builder.build_conditional_branch(cond, loop_body_bb, not_found_bb).unwrap();
+
+    // Loop body: memcmp(haystack + i, needle, needle_len)
+    ctx.builder.position_at_end(loop_body_bb);
+    let hay_offset = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), haystack_ptr, &[i], "hay_offset").unwrap()
+    };
+    let cmp = ctx.builder.build_call(
+        memcmp,
+        &[hay_offset.into(), needle_ptr.into(), needle_len.into()],
+        "cmp",
+    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+    let is_match = ctx.builder.build_int_compare(IntPredicate::EQ, cmp, ctx.context.i32_type().const_zero(), "is_match").unwrap();
+    // Compute next_i BEFORE the terminator
+    let next_i = ctx.builder.build_int_add(i, i64_ty.const_int(1, false), "next_i").unwrap();
+    phi_i.add_incoming(&[(&next_i, loop_body_bb)]);
+    ctx.builder.build_conditional_branch(is_match, found_bb, loop_header_bb).unwrap();
+
+    // found
+    ctx.builder.position_at_end(found_bb);
+    ctx.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    // not found
+    ctx.builder.position_at_end(not_found_bb);
+    ctx.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    // merge
+    ctx.builder.position_at_end(merge_bb);
+    let phi_result = ctx.builder.build_phi(i1_ty, "contains_result").unwrap();
+    phi_result.add_incoming(&[
+        (&i1_ty.const_int(1, false), found_bb),
+        (&i1_ty.const_zero(), not_found_bb),
+    ]);
+    Some(phi_result.as_basic_value())
+}
+
+fn compile_str_contains<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_str_parts(ctx, val);
+    let needle = compile_expr(ctx, &args[0].expr)?;
+    let (needle_ptr, needle_len) = extract_str_parts(ctx, needle);
+    compile_str_contains_impl(ctx, hay_ptr, hay_len, needle_ptr, needle_len)
+}
+
+/// Compile `s.starts_with(prefix)` for str.
+fn compile_str_starts_with_impl<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    hay_ptr: inkwell::values::PointerValue<'ctx>,
+    hay_len: inkwell::values::IntValue<'ctx>,
+    prefix_ptr: inkwell::values::PointerValue<'ctx>,
+    prefix_len: inkwell::values::IntValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let memcmp = ctx.module.get_function("memcmp")?;
+    // if prefix_len > hay_len → false; else memcmp(hay, prefix, prefix_len) == 0
+    let too_long = ctx.builder.build_int_compare(IntPredicate::UGT, prefix_len, hay_len, "too_long").unwrap();
+
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let cmp_bb = ctx.context.append_basic_block(fn_val, "sw_cmp");
+    let merge_bb = ctx.context.append_basic_block(fn_val, "sw_merge");
+    let short_bb = ctx.builder.get_insert_block().unwrap();
+    ctx.builder.build_conditional_branch(too_long, merge_bb, cmp_bb).unwrap();
+
+    ctx.builder.position_at_end(cmp_bb);
+    let cmp = ctx.builder.build_call(
+        memcmp,
+        &[hay_ptr.into(), prefix_ptr.into(), prefix_len.into()],
+        "sw_cmp",
+    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+    let matches = ctx.builder.build_int_compare(IntPredicate::EQ, cmp, ctx.context.i32_type().const_zero(), "sw_match").unwrap();
+    let cmp_end_bb = ctx.builder.get_insert_block().unwrap();
+    ctx.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    ctx.builder.position_at_end(merge_bb);
+    let phi = ctx.builder.build_phi(ctx.context.bool_type(), "sw_result").unwrap();
+    phi.add_incoming(&[
+        (&ctx.context.bool_type().const_zero(), short_bb),
+        (&matches, cmp_end_bb),
+    ]);
+    Some(phi.as_basic_value())
+}
+
+fn compile_str_starts_with<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_str_parts(ctx, val);
+    let prefix = compile_expr(ctx, &args[0].expr)?;
+    let (prefix_ptr, prefix_len) = extract_str_parts(ctx, prefix);
+    compile_str_starts_with_impl(ctx, hay_ptr, hay_len, prefix_ptr, prefix_len)
+}
+
+/// Compile `s.ends_with(suffix)` for str.
+fn compile_str_ends_with_impl<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    hay_ptr: inkwell::values::PointerValue<'ctx>,
+    hay_len: inkwell::values::IntValue<'ctx>,
+    suffix_ptr: inkwell::values::PointerValue<'ctx>,
+    suffix_len: inkwell::values::IntValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let memcmp = ctx.module.get_function("memcmp")?;
+    let too_long = ctx.builder.build_int_compare(IntPredicate::UGT, suffix_len, hay_len, "too_long").unwrap();
+
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let cmp_bb = ctx.context.append_basic_block(fn_val, "ew_cmp");
+    let merge_bb = ctx.context.append_basic_block(fn_val, "ew_merge");
+    let short_bb = ctx.builder.get_insert_block().unwrap();
+    ctx.builder.build_conditional_branch(too_long, merge_bb, cmp_bb).unwrap();
+
+    ctx.builder.position_at_end(cmp_bb);
+    let offset = ctx.builder.build_int_sub(hay_len, suffix_len, "ew_offset").unwrap();
+    let hay_end = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), hay_ptr, &[offset], "ew_ptr").unwrap()
+    };
+    let cmp = ctx.builder.build_call(
+        memcmp,
+        &[hay_end.into(), suffix_ptr.into(), suffix_len.into()],
+        "ew_cmp",
+    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+    let matches = ctx.builder.build_int_compare(IntPredicate::EQ, cmp, ctx.context.i32_type().const_zero(), "ew_match").unwrap();
+    let cmp_end_bb = ctx.builder.get_insert_block().unwrap();
+    ctx.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    ctx.builder.position_at_end(merge_bb);
+    let phi = ctx.builder.build_phi(ctx.context.bool_type(), "ew_result").unwrap();
+    phi.add_incoming(&[
+        (&ctx.context.bool_type().const_zero(), short_bb),
+        (&matches, cmp_end_bb),
+    ]);
+    Some(phi.as_basic_value())
+}
+
+fn compile_str_ends_with<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_str_parts(ctx, val);
+    let suffix = compile_expr(ctx, &args[0].expr)?;
+    let (suffix_ptr, suffix_len) = extract_str_parts(ctx, suffix);
+    compile_str_ends_with_impl(ctx, hay_ptr, hay_len, suffix_ptr, suffix_len)
+}
+
+/// Compile `s.to_string()` for str → malloc + memcpy, return String { ptr, len, cap }.
+fn compile_str_to_string<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let malloc = ctx.module.get_function("malloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    let val = compile_expr(ctx, inner)?;
+    let (src_ptr, src_len) = extract_str_parts(ctx, val);
+
+    let buf = ctx.builder.build_call(malloc, &[src_len.into()], "buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+    ctx.builder.build_call(memcpy, &[buf.into(), src_ptr.into(), src_len.into()], "").unwrap();
+
+    let mut sv = string_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, buf, 0, "str_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, src_len, 1, "str_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, src_len, 2, "str_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+/// Helper: trim_start implementation — returns (new_ptr, new_len) skipping leading whitespace.
+fn compile_trim_start_impl<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    len: inkwell::values::IntValue<'ctx>,
+) -> (inkwell::values::PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+    let i64_ty = ctx.context.i64_type();
+    let i8_ty = ctx.context.i8_type();
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    let loop_bb = ctx.context.append_basic_block(fn_val, "trim_s_loop");
+    let body_bb = ctx.context.append_basic_block(fn_val, "trim_s_body");
+    let end_bb = ctx.context.append_basic_block(fn_val, "trim_s_end");
+
+    ctx.builder.build_unconditional_branch(loop_bb).unwrap();
+
+    // Loop: find first non-whitespace
+    ctx.builder.position_at_end(loop_bb);
+    let phi_i = ctx.builder.build_phi(i64_ty, "ts_i").unwrap();
+    phi_i.add_incoming(&[(&i64_ty.const_zero(), entry_bb)]);
+    let i = phi_i.as_basic_value().into_int_value();
+    let in_range = ctx.builder.build_int_compare(IntPredicate::ULT, i, len, "ts_in_range").unwrap();
+    ctx.builder.build_conditional_branch(in_range, body_bb, end_bb).unwrap();
+
+    ctx.builder.position_at_end(body_bb);
+    let byte_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(i8_ty, ptr, &[i], "ts_byte_ptr").unwrap()
+    };
+    let byte = ctx.builder.build_load(i8_ty, byte_ptr, "ts_byte").unwrap().into_int_value();
+    // Check for space (32), tab (9), newline (10), carriage return (13)
+    let is_space = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(32, false), "is_sp").unwrap();
+    let is_tab = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(9, false), "is_tab").unwrap();
+    let is_nl = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(10, false), "is_nl").unwrap();
+    let is_cr = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(13, false), "is_cr").unwrap();
+    let ws1 = ctx.builder.build_or(is_space, is_tab, "ws1").unwrap();
+    let ws2 = ctx.builder.build_or(is_nl, is_cr, "ws2").unwrap();
+    let is_ws = ctx.builder.build_or(ws1, ws2, "is_ws").unwrap();
+    let next_i = ctx.builder.build_int_add(i, i64_ty.const_int(1, false), "ts_next").unwrap();
+    phi_i.add_incoming(&[(&next_i, body_bb)]);
+    ctx.builder.build_conditional_branch(is_ws, loop_bb, end_bb).unwrap();
+
+    ctx.builder.position_at_end(end_bb);
+    let phi_start = ctx.builder.build_phi(i64_ty, "trim_start_idx").unwrap();
+    phi_start.add_incoming(&[(&i, loop_bb), (&i, body_bb)]);
+    let start_idx = phi_start.as_basic_value().into_int_value();
+    let new_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(i8_ty, ptr, &[start_idx], "trimmed_ptr").unwrap()
+    };
+    let new_len = ctx.builder.build_int_sub(len, start_idx, "trimmed_len").unwrap();
+    (new_ptr, new_len)
+}
+
+/// Helper: trim_end implementation — returns new_len with trailing whitespace removed.
+fn compile_trim_end_impl<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    len: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = ctx.context.i64_type();
+    let i8_ty = ctx.context.i8_type();
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    let loop_bb = ctx.context.append_basic_block(fn_val, "trim_e_loop");
+    let body_bb = ctx.context.append_basic_block(fn_val, "trim_e_body");
+    let end_bb = ctx.context.append_basic_block(fn_val, "trim_e_end");
+
+    ctx.builder.build_unconditional_branch(loop_bb).unwrap();
+
+    // Loop: decrement from end
+    ctx.builder.position_at_end(loop_bb);
+    let phi_end = ctx.builder.build_phi(i64_ty, "te_end").unwrap();
+    phi_end.add_incoming(&[(&len, entry_bb)]);
+    let cur_end = phi_end.as_basic_value().into_int_value();
+    let has_more = ctx.builder.build_int_compare(IntPredicate::UGT, cur_end, i64_ty.const_zero(), "te_more").unwrap();
+    ctx.builder.build_conditional_branch(has_more, body_bb, end_bb).unwrap();
+
+    ctx.builder.position_at_end(body_bb);
+    let prev_idx = ctx.builder.build_int_sub(cur_end, i64_ty.const_int(1, false), "te_prev").unwrap();
+    let byte_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(i8_ty, ptr, &[prev_idx], "te_byte_ptr").unwrap()
+    };
+    let byte = ctx.builder.build_load(i8_ty, byte_ptr, "te_byte").unwrap().into_int_value();
+    let is_space = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(32, false), "is_sp").unwrap();
+    let is_tab = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(9, false), "is_tab").unwrap();
+    let is_nl = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(10, false), "is_nl").unwrap();
+    let is_cr = ctx.builder.build_int_compare(IntPredicate::EQ, byte, i8_ty.const_int(13, false), "is_cr").unwrap();
+    let ws1 = ctx.builder.build_or(is_space, is_tab, "ws1").unwrap();
+    let ws2 = ctx.builder.build_or(is_nl, is_cr, "ws2").unwrap();
+    let is_ws = ctx.builder.build_or(ws1, ws2, "is_ws").unwrap();
+    phi_end.add_incoming(&[(&prev_idx, body_bb)]);
+    ctx.builder.build_conditional_branch(is_ws, loop_bb, end_bb).unwrap();
+
+    ctx.builder.position_at_end(end_bb);
+    let phi_result = ctx.builder.build_phi(i64_ty, "trim_end_len").unwrap();
+    phi_result.add_incoming(&[(&cur_end, loop_bb), (&cur_end, body_bb)]);
+    phi_result.as_basic_value().into_int_value()
+}
+
+fn compile_str_trim_start<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_str_parts(ctx, val);
+    let (new_ptr, new_len) = compile_trim_start_impl(ctx, ptr, len);
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+fn compile_str_trim_end<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_str_parts(ctx, val);
+    let new_len = compile_trim_end_impl(ctx, ptr, len);
+    Some(build_str_struct(ctx, ptr, new_len))
+}
+
+fn compile_str_trim<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_str_parts(ctx, val);
+    let (new_ptr, trimmed_start_len) = compile_trim_start_impl(ctx, ptr, len);
+    let new_len = compile_trim_end_impl(ctx, new_ptr, trimmed_start_len);
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+// ---------------------------------------------------------------------------
+// String new intrinsic methods (byte_at, contains, starts_with, ends_with,
+// substring, clear, repeat, trim, trim_start, trim_end)
+// ---------------------------------------------------------------------------
+
+fn compile_string_byte_at<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, _) = extract_string_as_str_parts(ctx, val);
+    let idx = compile_expr(ctx, &args[0].expr)?.into_int_value();
+    let elem_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[idx], "byte_ptr").unwrap()
+    };
+    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap().into_int_value();
+    let result = ctx.builder.build_int_z_extend(byte, ctx.context.i64_type(), "byte_i64").unwrap();
+    Some(result.into())
+}
+
+fn compile_string_contains<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_string_as_str_parts(ctx, val);
+    let needle = compile_expr(ctx, &args[0].expr)?;
+    let (needle_ptr, needle_len) = extract_str_parts(ctx, needle);
+    compile_str_contains_impl(ctx, hay_ptr, hay_len, needle_ptr, needle_len)
+}
+
+fn compile_string_starts_with<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_string_as_str_parts(ctx, val);
+    let prefix = compile_expr(ctx, &args[0].expr)?;
+    let (prefix_ptr, prefix_len) = extract_str_parts(ctx, prefix);
+    compile_str_starts_with_impl(ctx, hay_ptr, hay_len, prefix_ptr, prefix_len)
+}
+
+fn compile_string_ends_with<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (hay_ptr, hay_len) = extract_string_as_str_parts(ctx, val);
+    let suffix = compile_expr(ctx, &args[0].expr)?;
+    let (suffix_ptr, suffix_len) = extract_str_parts(ctx, suffix);
+    compile_str_ends_with_impl(ctx, hay_ptr, hay_len, suffix_ptr, suffix_len)
+}
+
+fn compile_string_substring<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, _) = extract_string_as_str_parts(ctx, val);
+    let start = compile_expr(ctx, &args[0].expr)?.into_int_value();
+    let end = compile_expr(ctx, &args[1].expr)?.into_int_value();
+    let new_len = ctx.builder.build_int_sub(end, start, "sub_len").unwrap();
+    let new_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[start], "sub_ptr").unwrap()
+    };
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+fn compile_string_clear<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+    let string_ptr = compile_expr_addr(ctx, inner)?;
+    let len_field = ctx.builder.build_struct_gep(string_ty, string_ptr, 1, "len_field").unwrap();
+    ctx.builder.build_store(len_field, i64_ty.const_zero()).unwrap();
+    None
+}
+
+fn compile_string_repeat<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
+    let malloc = ctx.module.get_function("malloc")?;
+    let memcpy = ctx.module.get_function("memcpy")?;
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    let val = compile_expr(ctx, inner)?;
+    let (src_ptr, src_len) = extract_string_as_str_parts(ctx, val);
+    let n = compile_expr(ctx, &args[0].expr)?.into_int_value();
+
+    // total_len = src_len * n
+    let total_len = ctx.builder.build_int_mul(src_len, n, "total_len").unwrap();
+    let buf = ctx.builder.build_call(malloc, &[total_len.into()], "repeat_buf").unwrap()
+        .try_as_basic_value().left().unwrap().into_pointer_value();
+
+    // Loop: copy src_len bytes n times
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    let loop_bb = ctx.context.append_basic_block(fn_val, "repeat_loop");
+    let body_bb = ctx.context.append_basic_block(fn_val, "repeat_body");
+    let end_bb = ctx.context.append_basic_block(fn_val, "repeat_end");
+
+    ctx.builder.build_unconditional_branch(loop_bb).unwrap();
+
+    ctx.builder.position_at_end(loop_bb);
+    let phi_i = ctx.builder.build_phi(i64_ty, "rep_i").unwrap();
+    phi_i.add_incoming(&[(&i64_ty.const_zero(), entry_bb)]);
+    let i = phi_i.as_basic_value().into_int_value();
+    let cond = ctx.builder.build_int_compare(IntPredicate::ULT, i, n, "rep_cond").unwrap();
+    ctx.builder.build_conditional_branch(cond, body_bb, end_bb).unwrap();
+
+    ctx.builder.position_at_end(body_bb);
+    let offset = ctx.builder.build_int_mul(i, src_len, "rep_offset").unwrap();
+    let dst = unsafe {
+        ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), buf, &[offset], "rep_dst").unwrap()
+    };
+    ctx.builder.build_call(memcpy, &[dst.into(), src_ptr.into(), src_len.into()], "").unwrap();
+    let next_i = ctx.builder.build_int_add(i, i64_ty.const_int(1, false), "rep_next").unwrap();
+    phi_i.add_incoming(&[(&next_i, body_bb)]);
+    ctx.builder.build_unconditional_branch(loop_bb).unwrap();
+
+    ctx.builder.position_at_end(end_bb);
+    let mut sv = string_ty.get_undef();
+    sv = ctx.builder.build_insert_value(sv, buf, 0, "rep_ptr").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, total_len, 1, "rep_len").unwrap().into_struct_value();
+    sv = ctx.builder.build_insert_value(sv, total_len, 2, "rep_cap").unwrap().into_struct_value();
+    Some(sv.into())
+}
+
+fn compile_string_trim<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_string_as_str_parts(ctx, val);
+    let (new_ptr, trimmed_start_len) = compile_trim_start_impl(ctx, ptr, len);
+    let new_len = compile_trim_end_impl(ctx, new_ptr, trimmed_start_len);
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+fn compile_string_trim_start<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_string_as_str_parts(ctx, val);
+    let (new_ptr, new_len) = compile_trim_start_impl(ctx, ptr, len);
+    Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+fn compile_string_trim_end<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_string_as_str_parts(ctx, val);
+    let new_len = compile_trim_end_impl(ctx, ptr, len);
+    Some(build_str_struct(ctx, ptr, new_len))
 }
 
 // ---------------------------------------------------------------------------

@@ -216,11 +216,15 @@ impl<'a> InferCtx<'a> {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 // String + String → String (concatenation)
+                // str + str → String (concatenation)
                 if op == BinOp::Add {
                     let lhs_r = self.unify.resolve(&lhs_ty);
                     let rhs_r = self.unify.resolve(&rhs_ty);
                     if self.is_string_type(&lhs_r) && self.is_string_type(&rhs_r) {
                         return lhs_r;
+                    }
+                    if matches!(lhs_r, Ty::Prim(PrimTy::Str)) && matches!(rhs_r, Ty::Prim(PrimTy::Str)) {
+                        return self.get_string_struct_ty().unwrap_or(lhs_r);
                     }
                 }
                 // Both sides should unify; result is the same type.
@@ -406,6 +410,29 @@ impl<'a> InferCtx<'a> {
                         params: vec![],
                         ret: Box::new(Ty::Prim(PrimTy::Bool)),
                     };
+                }
+                _ => {}
+            }
+        }
+
+        // str built-in methods
+        if let Ty::Prim(PrimTy::Str) = resolved {
+            match name {
+                "len" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::I64)) },
+                "is_empty" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
+                "byte_at" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Prim(PrimTy::I64)) },
+                "contains" | "starts_with" | "ends_with" => {
+                    return Ty::Fn { params: vec![Ty::Prim(PrimTy::Str)], ret: Box::new(Ty::Prim(PrimTy::Bool)) };
+                }
+                "slice" | "substring" => {
+                    return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64), Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Prim(PrimTy::Str)) };
+                }
+                "to_string" => {
+                    let string_ty = self.get_string_struct_ty().unwrap_or(Ty::Error);
+                    return Ty::Fn { params: vec![], ret: Box::new(string_ty) };
+                }
+                "trim" | "trim_start" | "trim_end" => {
+                    return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Str)) };
                 }
                 _ => {}
             }
@@ -1164,6 +1191,13 @@ impl<'a> InferCtx<'a> {
                 Ty::Error
             }
         }
+    }
+
+    /// Get the String struct type from the symbol table.
+    fn get_string_struct_ty(&self) -> Option<Ty> {
+        self.resolved.symbols.iter()
+            .find(|s| s.name == "String" && matches!(s.kind, SymbolKind::Struct))
+            .map(|s| Ty::Struct { def_id: s.def_id, type_args: vec![] })
     }
 
     /// Check if a type is the Range struct (by looking up the struct name).

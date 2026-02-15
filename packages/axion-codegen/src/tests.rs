@@ -1795,6 +1795,383 @@ fn main() -> i64
     assert_eq!(result.exit_code, 1);
 }
 
+// ===== str built-in method tests =====
+
+#[test]
+fn compile_str_len() {
+    let src = "\
+fn main() -> i64
+    let s = \"hello\"
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
+}
+
+#[test]
+fn compile_str_is_empty_false() {
+    let src = "\
+fn main() -> i64
+    if \"hello\".is_empty()
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_str_is_empty_true() {
+    let src = "\
+fn main() -> i64
+    if \"\".is_empty()
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_byte_at() {
+    let src = "\
+fn main() -> i64
+    let s = \"ABC\"
+    s.byte_at(0)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 65); // 'A' = 65
+}
+
+#[test]
+fn compile_str_slice() {
+    let src = "\
+fn main()
+    let s = \"hello world\"
+    let sub = s.slice(6, 11)
+    println(sub)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "world");
+}
+
+#[test]
+fn compile_str_contains_true() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".contains(\"world\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_contains_false() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".contains(\"xyz\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_str_contains_empty() {
+    let src = "\
+fn main() -> i64
+    if \"hello\".contains(\"\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_starts_with_true() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".starts_with(\"hello\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_starts_with_false() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".starts_with(\"world\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_str_ends_with_true() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".ends_with(\"world\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_ends_with_false() {
+    let src = "\
+fn main() -> i64
+    if \"hello world\".ends_with(\"hello\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_str_to_string() {
+    let src = "\
+fn main()
+    let s = \"hello\".to_string()
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_str_eq_true() {
+    let src = "\
+fn main() -> i64
+    if \"hello\" == \"hello\"
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_eq_false() {
+    let src = "\
+fn main() -> i64
+    if \"hello\" == \"world\"
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_str_ne() {
+    let src = "\
+fn main() -> i64
+    if \"foo\" != \"bar\"
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_str_concat() {
+    let src = "\
+fn main()
+    let s = \"hello\" + \" world\"
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello world");
+}
+
+#[test]
+fn compile_str_trim() {
+    let src = "\
+fn main()
+    let s = \"  hello  \".trim()
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_str_trim_start() {
+    let src = "\
+fn main() -> i64
+    let s = \"  hello\".trim_start()
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
+}
+
+#[test]
+fn compile_str_trim_end() {
+    let src = "\
+fn main() -> i64
+    let s = \"hello  \".trim_end()
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
+}
+
+// ===== String new method tests =====
+
+#[test]
+fn compile_string_byte_at() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"ABC\")
+    s.byte_at(1)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 66); // 'B' = 66
+}
+
+#[test]
+fn compile_string_contains() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"hello world\")
+    if s.contains(\"world\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_string_starts_with() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"hello world\")
+    if s.starts_with(\"hello\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_string_ends_with() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"hello world\")
+    if s.ends_with(\"world\")
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_string_substring() {
+    let src = "\
+fn main()
+    let s = String.from(\"hello world\")
+    let sub = s.substring(0, 5)
+    println(sub)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_string_clear() {
+    let src = "\
+fn main() -> i64
+    let mut s = String.from(\"hello\")
+    s.clear()
+    s.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_string_repeat() {
+    let src = "\
+fn main()
+    let s = String.from(\"ab\").repeat(3)
+    println(s)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "ababab");
+}
+
+#[test]
+fn compile_string_trim() {
+    let src = "\
+fn main()
+    let s = String.from(\"  hello  \")
+    let t = s.trim()
+    println(t)
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.stdout.trim(), "hello");
+}
+
+#[test]
+fn compile_string_trim_start() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"  hello\")
+    let t = s.trim_start()
+    t.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
+}
+
+#[test]
+fn compile_string_trim_end() {
+    let src = "\
+fn main() -> i64
+    let s = String.from(\"hello  \")
+    let t = s.trim_end()
+    t.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Array[T] tests (continued)
+// ---------------------------------------------------------------------------
+
 #[test]
 fn compile_array_bool() {
     let src = "\
