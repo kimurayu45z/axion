@@ -11,6 +11,11 @@ use crate::lower::lower_type_expr;
 use crate::ty::{PrimTy, Ty};
 use crate::unify::UnifyContext;
 
+// Built-in effect names (language-level, no DefId needed).
+pub const EFFECT_IO: &str = "IO";
+pub const EFFECT_ALLOC: &str = "Alloc";
+pub const EFFECT_UNSAFE: &str = "Unsafe";
+
 /// The inference context for type-checking a single function body.
 pub(crate) struct InferCtx<'a> {
     pub env: &'a mut TypeEnv,
@@ -40,6 +45,18 @@ pub(crate) struct InferCtx<'a> {
 }
 
 impl<'a> InferCtx<'a> {
+    /// Check that a required effect is available (declared or handled).
+    /// Emits E0213 if the effect is missing.
+    fn require_effect(&mut self, effect: &str, operation: &str, span: Span) {
+        let declared = self.current_effects.iter().any(|e| e == effect);
+        let handled = self.handled_effects.iter().any(|e| e == effect);
+        if !declared && !handled {
+            self.diagnostics.push(errors::unhandled_effect(
+                operation, effect, self.file_name, span, self.source,
+            ));
+        }
+    }
+
     /// Infer the type of an expression.
     pub fn infer_expr(&mut self, expr: &Expr) -> Ty {
         let ty = self.infer_expr_inner(expr);
@@ -292,7 +309,24 @@ impl<'a> InferCtx<'a> {
         // If the func was a field access (method call), capture the receiver type.
         if matches!(&func.kind, ExprKind::Field { .. }) {
             if let Some(receiver_ty) = self.last_field_receiver_ty.take() {
-                self.method_receiver_types.insert(span.start, receiver_ty);
+                self.method_receiver_types.insert(span.start, receiver_ty.clone());
+
+                // Ptr[T] intrinsic methods: read/write/offset require Unsafe.
+                // null and is_null are safe.
+                if matches!(receiver_ty, Ty::Ptr(_)) {
+                    if let ExprKind::Field { name, .. } = &func.kind {
+                        match name.as_str() {
+                            "read" | "write" | "offset" => {
+                                self.require_effect(
+                                    EFFECT_UNSAFE,
+                                    &format!("Ptr.{}", name),
+                                    span,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
 

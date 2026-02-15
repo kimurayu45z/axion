@@ -2505,3 +2505,19 @@ fn main() -> i64
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 10);
 }
+
+// ===== Handle expression codegen =====
+
+#[test]
+fn compile_handle_inner_expr() {
+    let src = "
+fn risky() -> i64 with Unsafe
+    42
+
+fn main() -> i64
+    handle risky()
+        Unsafe => 0
+";
+    let result = compile_and_run(src);
+    assert_eq!(result.exit_code, 42);
+}

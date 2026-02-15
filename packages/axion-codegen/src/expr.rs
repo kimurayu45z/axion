@@ -94,7 +94,8 @@ pub fn compile_expr<'ctx>(
         ExprKind::Cast { expr: inner, target } => compile_cast(ctx, inner, target),
         ExprKind::SizeOf(type_expr) => compile_sizeof(ctx, type_expr),
         ExprKind::MapLit(_) | ExprKind::SetLit(_) => None,
-        ExprKind::Handle { .. } | ExprKind::Try(_) | ExprKind::Await(_) => None,
+        ExprKind::Handle { expr: inner, .. } => compile_expr(ctx, inner),
+        ExprKind::Try(_) | ExprKind::Await(_) => None,
     }
 }
 

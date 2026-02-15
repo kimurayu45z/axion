@@ -312,6 +312,7 @@ pub struct ExternFnDecl {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
+    pub effects: Vec<Effect>,
     pub span: Span,
 }
 

@@ -9,6 +9,8 @@ pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/math.ax");
 pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/string.ax");
 pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/array.ax");
 pub const PRELUDE_HASHMAP: &str = include_str!("../../../stdlib/hashmap.ax");
+pub const PRELUDE_IO: &str = include_str!("../../../stdlib/io.ax");
+pub const PRELUDE_LOG: &str = include_str!("../../../stdlib/log.ax");
 
 /// A boundary marker for one stdlib file within the combined prelude source.
 #[derive(Debug, Clone)]
@@ -21,6 +23,13 @@ pub struct StdFileBoundary {
     pub end: usize,
 }
 
+/// A separately-parsed stdlib module (not part of the auto-import prelude).
+#[derive(Debug, Clone)]
+pub struct StdAuxModule {
+    pub name: String,
+    pub source: &'static str,
+}
+
 /// Get the combined prelude source (without user source).
 pub fn prelude_source() -> String {
     prelude_source_with_boundaries().0
@@ -30,6 +39,9 @@ pub fn prelude_source() -> String {
 ///
 /// Returns `(combined_source, boundaries)` where each boundary records which
 /// stdlib file occupies which byte range in the combined source.
+///
+/// Only includes auto-import modules. Non-auto-import modules (io, log) are
+/// returned by `aux_std_modules()`.
 pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
     let files: &[(&str, &str)] = &[
         ("ffi", PRELUDE_FFI),
@@ -62,6 +74,15 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
     }
 
     (combined, boundaries)
+}
+
+/// Returns stdlib modules that are NOT auto-imported into every module.
+/// These are available only via explicit `use std.<module>.*` imports.
+pub fn aux_std_modules() -> Vec<StdAuxModule> {
+    vec![
+        StdAuxModule { name: "io".to_string(), source: PRELUDE_IO },
+        StdAuxModule { name: "log".to_string(), source: PRELUDE_LOG },
+    ]
 }
 
 /// Prepend the prelude to user source.

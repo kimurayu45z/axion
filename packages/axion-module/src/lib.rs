@@ -8,7 +8,7 @@ use std::path::Path;
 
 use axion_diagnostics::Diagnostic;
 use axion_resolve::def_id::{DefId, SymbolKind};
-use axion_resolve::prelude::{prelude_source_with_boundaries, StdFileBoundary};
+use axion_resolve::prelude::{prelude_source_with_boundaries, aux_std_modules, StdFileBoundary};
 use axion_resolve::ResolveOutput;
 use axion_syntax::SourceFile;
 use axion_types::ExternalTypeInfo;
@@ -96,7 +96,37 @@ fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
     let prelude_def_id_offset = prelude_resolved.symbols.len() as u32;
 
     // 3. Build per-std-module exports map for `use std.*` validation.
-    let std_exports = build_std_exports(&prelude_resolved, &boundaries);
+    let mut std_exports = build_std_exports(&prelude_resolved, &boundaries);
+
+    // 3b. Parse auxiliary std modules (io, log) separately and add their exports.
+    //     These modules are NOT auto-imported — they're only available via `use std.*`.
+    let mut aux_def_id_offset = prelude_def_id_offset;
+    for aux in aux_std_modules() {
+        let (aux_ast, _) = axion_parser::parse(aux.source, &format!("<std.{}>", aux.name));
+        let (aux_resolved, _) = axion_resolve::resolve_single(&aux_ast, &format!("<std.{}>", aux.name), aux.source);
+        let aux_exports: Vec<Export> = aux_resolved
+            .symbols
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    SymbolKind::Function
+                        | SymbolKind::Struct
+                        | SymbolKind::Enum
+                        | SymbolKind::ExternFn
+                ) && s.span != axion_syntax::Span::dummy()
+            })
+            .map(|s| Export {
+                name: s.name.clone(),
+                // Offset the DefId to avoid collision with prelude DefIds.
+                def_id: DefId(s.def_id.0 + aux_def_id_offset),
+                kind: s.kind,
+                vis: s.vis.clone(),
+            })
+            .collect();
+        std_exports.insert(aux.name.clone(), aux_exports);
+        aux_def_id_offset += aux_resolved.symbols.len() as u32;
+    }
 
     // 4. Build prelude TypeEnv for ExternalTypeInfo.
     let mut prelude_unify = axion_types::unify::UnifyContext::new();

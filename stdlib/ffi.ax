@@ -1,7 +1,7 @@
 extern "C"
-    fn malloc(size: i64) -> Ptr[{}]
-    fn realloc(ptr: Ptr[{}], size: i64) -> Ptr[{}]
-    fn free(ptr: Ptr[{}])
-    fn memmove(dst: Ptr[{}], src: Ptr[{}], n: i64) -> Ptr[{}]
-    fn memcpy(dst: Ptr[{}], src: Ptr[{}], n: i64) -> Ptr[{}]
-    fn memcmp(a: Ptr[{}], b: Ptr[{}], n: i64) -> i32
+    fn malloc(size: i64) -> Ptr[{}] with Unsafe, Alloc
+    fn realloc(ptr: Ptr[{}], size: i64) -> Ptr[{}] with Unsafe, Alloc
+    fn free(ptr: Ptr[{}]) with Unsafe, Alloc
+    fn memmove(dst: Ptr[{}], src: Ptr[{}], n: i64) -> Ptr[{}] with Unsafe
+    fn memcpy(dst: Ptr[{}], src: Ptr[{}], n: i64) -> Ptr[{}] with Unsafe
+    fn memcmp(a: Ptr[{}], b: Ptr[{}], n: i64) -> i32 with Unsafe

@@ -2620,10 +2620,18 @@ impl Parser {
             None
         };
 
+        let effects = if self.check(&TokenKind::With) {
+            self.advance();
+            self.parse_effect_list()?
+        } else {
+            Vec::new()
+        };
+
         Some(ExternFnDecl {
             name,
             params,
             return_type,
+            effects,
             span: span.merge(self.prev_span()),
         })
     }

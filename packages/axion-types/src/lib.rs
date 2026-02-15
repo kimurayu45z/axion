@@ -160,10 +160,21 @@ pub fn type_check_with_imports(
                     .iter()
                     .find(|s| s.span == item.span)
                     .map(|s| s.def_id);
-                let current_effects = method_def_id
+                let mut current_effects = method_def_id
                     .and_then(|id| env.fn_effects.get(&id))
                     .cloned()
                     .unwrap_or_default();
+
+                // Intrinsic receiver types (Array, String, HashMap) are trusted stdlib.
+                // Grant implicit effects so their internal Ptr/malloc use doesn't error.
+                // These are NOT registered in fn_effects, so they don't propagate to callers.
+                if matches!(receiver_name.as_str(), "Array" | "String" | "HashMap") {
+                    for eff in &["Unsafe", "Alloc", "IO"] {
+                        if !current_effects.iter().any(|e| e == eff) {
+                            current_effects.push(eff.to_string());
+                        }
+                    }
+                }
 
                 let self_ty_for_method = receiver_ty.clone();
                 let mut ctx = InferCtx {
@@ -231,6 +242,14 @@ pub fn type_check_with_imports(
                 // Register `Self` type in env for this constructor's scope.
                 register_self_type(&mut env, &c.type_name, resolved);
 
+                // Trusted stdlib constructors get implicit effects.
+                let mut current_effects = Vec::new();
+                if matches!(c.type_name.as_str(), "Array" | "String" | "HashMap") {
+                    for eff in &["Unsafe", "Alloc", "IO"] {
+                        current_effects.push(eff.to_string());
+                    }
+                }
+
                 let mut ctx = InferCtx {
                     env: &mut env,
                     unify: &mut unify,
@@ -242,7 +261,7 @@ pub fn type_check_with_imports(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: ret_ty,
                     self_ty: None,
-                    current_effects: Vec::new(),
+                    current_effects,
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
                     method_receiver_types: &mut method_receiver_types,
@@ -265,6 +284,7 @@ pub fn type_check_with_imports(
             }
             ItemKind::Test(t) => {
                 // Type-check test bodies.
+                // Tests are inherently impure — grant all effects implicitly.
                 let mut ctx = InferCtx {
                     env: &mut env,
                     unify: &mut unify,
@@ -276,7 +296,10 @@ pub fn type_check_with_imports(
                     field_resolutions: &mut field_resolutions,
                     current_return_ty: Ty::Unit,
                     self_ty: None,
-                    current_effects: Vec::new(),
+                    current_effects: vec![
+                        "IO".into(), "Alloc".into(), "Unsafe".into(),
+                        "Async".into(), "Random".into(), "Clock".into(),
+                    ],
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
                     method_receiver_types: &mut method_receiver_types,

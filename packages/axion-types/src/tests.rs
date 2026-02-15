@@ -1124,3 +1124,100 @@ fn infer_slice_len() {
 fn infer_for_slice() {
     check_no_errors("fn main() -> i64\n    let arr = [1, 2, 3]\n    let mut s: i64 = 0\n    for x in arr[..]\n        s = s + x\n    s");
 }
+
+// ===== Effect system: Ptr[T] Unsafe checks =====
+
+#[test]
+fn ptr_read_requires_unsafe() {
+    let diags = check_errors(
+        "fn main() -> i64\n    let p: Ptr[i64] = Ptr[i64].null()\n    p.read()"
+    );
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (Ptr.read requires Unsafe), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn ptr_write_requires_unsafe() {
+    let diags = check_errors(
+        "fn main()\n    let p: Ptr[i64] = Ptr[i64].null()\n    p.write(42)"
+    );
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (Ptr.write requires Unsafe), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn ptr_offset_requires_unsafe() {
+    let diags = check_errors(
+        "fn main()\n    let p: Ptr[i64] = Ptr[i64].null()\n    let q = p.offset(1)"
+    );
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (Ptr.offset requires Unsafe), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn ptr_null_is_safe() {
+    check_no_errors("fn main()\n    let p: Ptr[i64] = Ptr[i64].null()");
+}
+
+#[test]
+fn ptr_is_null_is_safe() {
+    check_no_errors("fn main() -> bool\n    let p: Ptr[i64] = Ptr[i64].null()\n    p.is_null()");
+}
+
+#[test]
+fn ptr_read_with_unsafe_ok() {
+    check_no_errors(
+        "fn main() -> i64 with Unsafe\n    let p: Ptr[i64] = Ptr[i64].null()\n    p.read()"
+    );
+}
+
+#[test]
+fn handle_suppresses_unsafe() {
+    check_no_errors(
+        "fn main() -> i64\n    let p: Ptr[i64] = Ptr[i64].null()\n    handle p.read()\n        Unsafe => 0"
+    );
+}
+
+// ===== Effect system: extern fn effects =====
+
+#[test]
+fn extern_fn_with_effect_propagates() {
+    let diags = check_errors(
+        "extern \"C\"\n    fn dangerous() -> i64 with Unsafe\n\nfn main() -> i64\n    dangerous()"
+    );
+    assert!(diags.iter().any(|d| d.code == "E0213"),
+        "expected E0213 (extern fn Unsafe propagates), got: {:?}", diags.iter().map(|d| &d.code).collect::<Vec<_>>());
+}
+
+#[test]
+fn extern_fn_with_effect_declared_ok() {
+    check_no_errors(
+        "extern \"C\"\n    fn dangerous() -> i64 with Unsafe\n\nfn main() -> i64 with Unsafe\n    dangerous()"
+    );
+}
+
+// ===== Effect system: trusted stdlib (Array/String/HashMap) =====
+
+#[test]
+fn array_methods_no_effect_needed() {
+    check_no_errors_with_prelude(
+        "fn main()\n    let mut arr = Array[i64].new()\n    arr.push(42)\n    arr.drop()"
+    );
+}
+
+#[test]
+fn string_methods_no_effect_needed() {
+    check_no_errors_with_prelude(
+        "fn main() -> i64\n    let s = String.new()\n    s.len()"
+    );
+}
+
+// ===== Effect system: test block implicit effects =====
+
+#[test]
+fn test_block_implicit_effects() {
+    // test blocks get all effects implicitly, so calling effectful functions is OK.
+    check_no_errors(
+        "fn risky() -> i64 with Unsafe\n    42\n\ntest \"can call unsafe\"\n    let x = risky()"
+    );
+}

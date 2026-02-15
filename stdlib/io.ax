@@ -1,0 +1,5 @@
+pub fn println(s: str) with IO
+    {}
+
+pub fn print(s: str) with IO
+    {}

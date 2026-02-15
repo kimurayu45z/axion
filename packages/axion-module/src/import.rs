@@ -47,8 +47,11 @@ pub fn resolve_in_order(
         let mut imported_names: HashMap<String, usize> = HashMap::new(); // name → dep_idx
 
         // Validate `use std.*` declarations against std_exports.
+        // Also inject symbols from non-auto-import std modules (like io, log)
+        // that the user explicitly imports via `use std.*`.
         if !std_exports.is_empty() {
-            validate_std_imports(&modules[idx], std_exports, &mut diagnostics);
+            let std_extra = validate_std_imports(&modules[idx], std_exports, &mut diagnostics);
+            imports.extend(std_extra);
         }
 
         for &dep_idx in &graph.dependencies[idx] {
@@ -196,14 +199,15 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
 
 /// Validate `use std.*` declarations in a module against the std exports map.
 ///
-/// The prelude already injects all std symbols, so no additional imports are
-/// needed — this function only checks that the referenced std module and symbol
-/// actually exist, emitting E0600 / E0602 / E0603 as appropriate.
+/// Returns extra imports for symbols from non-auto-import std modules (e.g. io, log)
+/// that the user explicitly imports. Auto-import module symbols are already in the
+/// prelude, so only non-auto-import symbols need to be returned here.
 fn validate_std_imports(
     module: &Module,
     std_exports: &HashMap<String, Vec<Export>>,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Vec<(String, DefId, SymbolKind)> {
+    let mut extra_imports = Vec::new();
     for item in &module.ast.items {
         if let ItemKind::Use(use_decl) = &item.kind {
             if use_decl.path.first().map(|s| s.as_str()) != Some("std") {
@@ -246,8 +250,10 @@ fn validate_std_imports(
             };
 
             for name in &names {
-                if mod_exports.iter().any(|e| e.name == *name) {
-                    // Symbol found — prelude already injected it, nothing to do.
+                if let Some(export) = mod_exports.iter().find(|e| e.name == *name) {
+                    // Symbol found — collect as extra import (needed for
+                    // non-auto-import modules whose symbols aren't in the prelude).
+                    extra_imports.push((export.name.clone(), export.def_id, export.kind));
                 } else {
                     diagnostics.push(errors::unresolved_name(
                         name,
@@ -260,6 +266,8 @@ fn validate_std_imports(
             }
         }
     }
+
+    extra_imports
 }
 
 /// Find the span of a use declaration that imports a given name.

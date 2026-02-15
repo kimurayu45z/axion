@@ -240,6 +240,9 @@ fn resolve_extern_block(ctx: &mut ResolveContext, ext: &ExternBlock, parent: Sco
         if let Some(ref ret) = decl.return_type {
             resolve_type_expr(ctx, ret, parent);
         }
+        for eff in &decl.effects {
+            resolve_effect(ctx, eff, parent);
+        }
     }
 }
 

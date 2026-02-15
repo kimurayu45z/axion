@@ -463,6 +463,13 @@ impl TypeEnv {
             };
             self.defs.insert(def_id, TypeInfo { ty: fn_ty });
 
+            // Register effects for extern fn.
+            if !decl.effects.is_empty() {
+                let effects: Vec<String> =
+                    decl.effects.iter().map(|e| e.name.clone()).collect();
+                self.fn_effects.insert(def_id, effects);
+            }
+
             // Register parameters.
             self.register_params(&decl.params, symbols, resolutions, unify);
         }
