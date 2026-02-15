@@ -1,14 +1,68 @@
+pub fn str_from_raw(ptr: Ptr[u8], len: usize) -> str
+    "intrinsic"
+
+fn _is_whitespace(b: u8) -> bool
+    b == (32 as u8) || b == (9 as u8) || b == (10 as u8) || b == (13 as u8)
+
+fn _trim_start_str(ptr: Ptr[u8], len: usize) -> str with Unsafe
+    let mut i: usize = 0
+    while i < len
+        if _is_whitespace(ptr.offset(i).read()) == false
+            return str_from_raw(ptr.offset(i), len - i)
+        i = i + 1
+    str_from_raw(ptr.offset(len), 0)
+
+fn _trim_end_str(ptr: Ptr[u8], len: usize) -> str with Unsafe
+    let mut i = len
+    while i > 0
+        if _is_whitespace(ptr.offset(i - 1).read()) == false
+            return str_from_raw(ptr, i)
+        i = i - 1
+    str_from_raw(ptr, 0)
+
+fn _bytes_contains(hay: Ptr[u8], hay_len: usize, needle: Ptr[u8], needle_len: usize) -> bool with Unsafe
+    if needle_len == 0
+        return true
+    if needle_len > hay_len
+        return false
+    let end = hay_len - needle_len + 1
+    let mut i: usize = 0
+    while i < end
+        if memcmp(hay.offset(i) as Ptr[{}], needle as Ptr[{}], needle_len) == 0
+            return true
+        i = i + 1
+    false
+
+fn _bytes_starts_with(hay: Ptr[u8], hay_len: usize, prefix: Ptr[u8], prefix_len: usize) -> bool with Unsafe
+    if prefix_len > hay_len
+        return false
+    if prefix_len == 0
+        return true
+    memcmp(hay as Ptr[{}], prefix as Ptr[{}], prefix_len) == 0
+
+fn _bytes_ends_with(hay: Ptr[u8], hay_len: usize, suffix: Ptr[u8], suffix_len: usize) -> bool with Unsafe
+    if suffix_len > hay_len
+        return false
+    if suffix_len == 0
+        return true
+    memcmp(hay.offset(hay_len - suffix_len) as Ptr[{}], suffix as Ptr[{}], suffix_len) == 0
+
 pub struct String
-    _ptr: i64
+    _ptr: Ptr[u8]
     _len: usize
     _cap: usize
 
 impl String
     fn new() -> String
-        String #{_ptr: 0, _len: 0, _cap: 0}
+        String #{_ptr: 0 as Ptr[u8], _len: 0, _cap: 0}
 
     fn from(s: str) -> String
-        String #{_ptr: 0, _len: 0, _cap: 0}
+        let len = s.len()
+        if len == 0
+            return String.new()
+        let buf = malloc(len) as Ptr[u8]
+        memcpy(buf as Ptr[{}], s.as_ptr() as Ptr[{}], len)
+        String #{_ptr: buf, _len: len, _cap: len}
 
     fn len(self) -> usize
         self._len
@@ -17,40 +71,62 @@ impl String
         self._len == 0
 
     fn push(mut self, s: str)
-        {}
+        let src_len = s.len()
+        if src_len == 0
+            return
+        let new_len = self._len + src_len
+        if new_len > self._cap
+            let mut new_cap = self._cap * 2
+            if new_len > new_cap
+                new_cap = new_len
+            self._ptr = realloc(self._ptr as Ptr[{}], new_cap) as Ptr[u8]
+            self._cap = new_cap
+        memcpy(self._ptr.offset(self._len) as Ptr[{}], s.as_ptr() as Ptr[{}], src_len)
+        self._len = new_len
 
     fn as_str(self) -> str
-        "stub"
+        str_from_raw(self._ptr, self._len)
 
     fn byte_at(self, i: usize) -> u8
-        0 as u8
+        self._ptr.offset(i).read()
 
     fn contains(self, s: str) -> bool
-        false
+        _bytes_contains(self._ptr, self._len, s.as_ptr(), s.len())
 
     fn starts_with(self, s: str) -> bool
-        false
+        _bytes_starts_with(self._ptr, self._len, s.as_ptr(), s.len())
 
     fn ends_with(self, s: str) -> bool
-        false
+        _bytes_ends_with(self._ptr, self._len, s.as_ptr(), s.len())
 
     fn substring(self, start: usize, end: usize) -> str
-        "stub"
+        str_from_raw(self._ptr.offset(start), end - start)
 
     fn clear(mut self)
-        {}
+        self._len = 0
 
     fn repeat(self, n: usize) -> String
-        String #{_ptr: 0, _len: 0, _cap: 0}
+        let total = self._len * n
+        if total == 0
+            return String.new()
+        let buf = malloc(total) as Ptr[u8]
+        let mut i: usize = 0
+        while i < n
+            memcpy(buf.offset(i * self._len) as Ptr[{}], self._ptr as Ptr[{}], self._len)
+            i = i + 1
+        String #{_ptr: buf, _len: total, _cap: total}
 
     fn trim(self) -> str
-        "stub"
+        let s = self.as_str()
+        let ts = _trim_start_str(s.as_ptr(), s.len())
+        _trim_end_str(ts.as_ptr(), ts.len())
 
     fn trim_start(self) -> str
-        "stub"
+        _trim_start_str(self._ptr, self._len)
 
     fn trim_end(self) -> str
-        "stub"
+        _trim_end_str(self._ptr, self._len)
 
     fn drop(mut self)
-        {}
+        if self._ptr.is_null() == false
+            free(self._ptr as Ptr[{}])

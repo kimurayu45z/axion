@@ -96,7 +96,8 @@ pub fn ty_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> BasicTypeEnum<'ctx> 
 /// Convert a primitive type to LLVM type.
 pub fn prim_to_llvm<'ctx>(context: &'ctx Context, prim: PrimTy) -> BasicTypeEnum<'ctx> {
     match prim {
-        PrimTy::I8 | PrimTy::U8 | PrimTy::Bool => context.i8_type().into(),
+        PrimTy::Bool => context.bool_type().into(),
+        PrimTy::I8 | PrimTy::U8 => context.i8_type().into(),
         PrimTy::I16 | PrimTy::U16 => context.i16_type().into(),
         PrimTy::I32 | PrimTy::U32 | PrimTy::Char => context.i32_type().into(),
         PrimTy::I64 | PrimTy::U64 | PrimTy::Usize | PrimTy::Isize => context.i64_type().into(),

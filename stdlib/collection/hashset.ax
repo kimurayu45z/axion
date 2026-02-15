@@ -1,28 +1,139 @@
 pub struct HashSet[T]
-    _keys: i64
-    _states: i64
-    _size: i64
-    _cap: i64
+    _keys: Ptr[T]
+    _states: Ptr[u8]
+    _size: usize
+    _cap: usize
 
 impl[T] HashSet[T]
     fn new() -> HashSet[T]
-        let s: HashSet[T] = HashSet #{_keys: 0, _states: 0, _size: 0, _cap: 0}
+        let s: HashSet[T] = HashSet #{_keys: 0 as Ptr[T], _states: 0 as Ptr[u8], _size: 0, _cap: 0}
         s
 
-    fn len(self) -> i64
+    fn len(self) -> usize
         self._size
 
     fn is_empty(self) -> bool
         self._size == 0
 
     fn insert(mut self, key: T) -> bool
+        if self._cap == 0
+            self._grow()
+        if self._size * 10 > self._cap * 7
+            self._grow()
+        let sz = sizeof[T]()
+        let temp = malloc(sz) as Ptr[T]
+        temp.write(key)
+        let bp = temp as Ptr[u8]
+        let mut h: usize = 5381
+        let mut hi: usize = 0
+        while hi < sz
+            h = h * 33 + (bp.offset(hi).read() as usize)
+            hi = hi + 1
+        free(temp as Ptr[{}])
+        let mut idx = h % self._cap
+        let mut count: usize = 0
+        while count < self._cap
+            let state = self._states.offset(idx).read()
+            if state == (0 as u8)
+                self._keys.offset(idx).write(key)
+                self._states.offset(idx).write(1 as u8)
+                self._size = self._size + 1
+                return true
+            if state == (1 as u8)
+                if self._keys.offset(idx).read() == key
+                    return false
+            idx = (idx + 1) % self._cap
+            count = count + 1
         false
 
     fn contains(self, key: T) -> bool
+        if self._cap == 0
+            return false
+        let sz = sizeof[T]()
+        let temp = malloc(sz) as Ptr[T]
+        temp.write(key)
+        let bp = temp as Ptr[u8]
+        let mut h: usize = 5381
+        let mut hi: usize = 0
+        while hi < sz
+            h = h * 33 + (bp.offset(hi).read() as usize)
+            hi = hi + 1
+        free(temp as Ptr[{}])
+        let mut idx = h % self._cap
+        let mut count: usize = 0
+        while count < self._cap
+            let state = self._states.offset(idx).read()
+            if state == (0 as u8)
+                return false
+            if state == (1 as u8)
+                if self._keys.offset(idx).read() == key
+                    return true
+            idx = (idx + 1) % self._cap
+            count = count + 1
         false
 
     fn remove(mut self, key: T) -> bool
+        if self._cap == 0
+            return false
+        let sz = sizeof[T]()
+        let temp = malloc(sz) as Ptr[T]
+        temp.write(key)
+        let bp = temp as Ptr[u8]
+        let mut h: usize = 5381
+        let mut hi: usize = 0
+        while hi < sz
+            h = h * 33 + (bp.offset(hi).read() as usize)
+            hi = hi + 1
+        free(temp as Ptr[{}])
+        let mut idx = h % self._cap
+        let mut count: usize = 0
+        while count < self._cap
+            let state = self._states.offset(idx).read()
+            if state == (0 as u8)
+                return false
+            if state == (1 as u8)
+                if self._keys.offset(idx).read() == key
+                    self._states.offset(idx).write(2 as u8)
+                    self._size = self._size - 1
+                    return true
+            idx = (idx + 1) % self._cap
+            count = count + 1
         false
 
+    fn clear(mut self)
+        if self._cap > 0
+            let mut i: usize = 0
+            while i < self._cap
+                self._states.offset(i).write(0 as u8)
+                i = i + 1
+            self._size = 0
+
+    fn _grow(mut self)
+        let old_cap = self._cap
+        let old_keys = self._keys
+        let old_states = self._states
+        let mut new_cap = old_cap * 2
+        if new_cap < 8
+            new_cap = 8
+        self._keys = malloc(new_cap * sizeof[T]()) as Ptr[T]
+        self._states = malloc(new_cap) as Ptr[u8]
+        let mut i: usize = 0
+        while i < new_cap
+            self._states.offset(i).write(0 as u8)
+            i = i + 1
+        self._cap = new_cap
+        self._size = 0
+        if old_cap > 0
+            let mut j: usize = 0
+            while j < old_cap
+                if old_states.offset(j).read() == (1 as u8)
+                    self.insert(old_keys.offset(j).read())
+                j = j + 1
+            free(old_keys as Ptr[{}])
+            free(old_states as Ptr[{}])
+
     fn drop(mut self)
-        {}
+        if self._keys.is_null() == false
+            free(self._keys as Ptr[{}])
+        if self._states.is_null() == false
+            free(self._states as Ptr[{}])

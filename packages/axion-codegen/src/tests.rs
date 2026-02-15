@@ -2534,7 +2534,7 @@ fn main() -> i64
 #[test]
 fn compile_hashset_new() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = HashSet[i64].new()
     s.len()
 ";

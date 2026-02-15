@@ -67,6 +67,7 @@ pub fn declare_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceF
         match &item.kind {
             ItemKind::Function(f) => declare_fn(ctx, f, item.span),
             ItemKind::Method(m) => declare_method(ctx, m, item.span),
+            ItemKind::Constructor(c) => declare_constructor(ctx, c, item.span),
             ItemKind::Extern(ext) => declare_extern_block(ctx, ext),
             _ => {}
         }
@@ -102,6 +103,46 @@ fn declare_fn<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span) {
     };
 
     let fn_value = ctx.module.add_function(&f.name, fn_type, None);
+    ctx.functions.insert(def_id, fn_value);
+}
+
+fn declare_constructor<'ctx>(ctx: &mut CodegenCtx<'ctx>, c: &ConstructorDef, item_span: Span) {
+    // Skip generic constructors — they will be compiled as monomorphized specializations.
+    if !c.type_params.is_empty() {
+        return;
+    }
+
+    let def_id = ctx
+        .resolved
+        .symbols
+        .iter()
+        .find(|s| s.span == item_span && s.kind == SymbolKind::Constructor)
+        .map(|s| s.def_id);
+    let Some(def_id) = def_id else { return };
+
+    let fn_ty = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    let Some(Ty::Fn { params, ret }) = fn_ty else {
+        return;
+    };
+
+    // Skip constructors whose type contains Ty::Param.
+    if params.iter().any(ty_contains_param) || ty_contains_param(ret) {
+        return;
+    }
+
+    let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
+        .iter()
+        .map(|t| ty_to_llvm_metadata(ctx, t))
+        .collect();
+
+    let fn_type = if is_void_ty(ret) {
+        ctx.context.void_type().fn_type(&param_types, false)
+    } else {
+        ty_to_llvm(ctx, ret).fn_type(&param_types, false)
+    };
+
+    let fn_name = format!("{}.{}", c.type_name, c.name);
+    let fn_value = ctx.module.add_function(&fn_name, fn_type, None);
     ctx.functions.insert(def_id, fn_value);
 }
 
@@ -148,6 +189,7 @@ pub fn compile_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceF
         match &item.kind {
             ItemKind::Function(f) => compile_fn_body(ctx, f, item.span),
             ItemKind::Method(m) => compile_method_body(ctx, m, item.span),
+            ItemKind::Constructor(c) => compile_constructor_body(ctx, c, item.span),
             _ => {}
         }
     }
@@ -248,6 +290,112 @@ fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span)
             ctx.builder.build_return(Some(&val)).unwrap();
         } else {
             // Return default value.
+            let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
+            let zero = ret_llvm_ty.const_zero();
+            ctx.builder.build_return(Some(&zero)).unwrap();
+        }
+    }
+}
+
+fn compile_constructor_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, c: &ConstructorDef, item_span: Span) {
+    if !c.type_params.is_empty() {
+        return;
+    }
+
+    let def_id = ctx
+        .resolved
+        .symbols
+        .iter()
+        .find(|s| s.span == item_span && s.kind == SymbolKind::Constructor)
+        .map(|s| s.def_id);
+    let Some(def_id) = def_id else { return };
+
+    let fn_ty_info = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    if let Some(Ty::Fn { params, ret }) = fn_ty_info {
+        if params.iter().any(ty_contains_param) || ty_contains_param(ret) {
+            return;
+        }
+    }
+
+    let Some(&fn_value) = ctx.functions.get(&def_id) else {
+        return;
+    };
+
+    let fn_ty = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    let ret_ty = match fn_ty {
+        Some(Ty::Fn { ret, .. }) => (**ret).clone(),
+        _ => Ty::Unit,
+    };
+
+    let entry_bb = ctx.context.append_basic_block(fn_value, "entry");
+    ctx.builder.position_at_end(entry_bb);
+
+    ctx.locals.clear();
+    ctx.local_types.clear();
+    ctx.heap_allocs.clear();
+    ctx.drop_locals.clear();
+
+    // Alloca params as local variables (no self for constructors).
+    for (i, param) in c.params.iter().enumerate() {
+        let param_sym = ctx
+            .resolved
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Param && s.span == param.span);
+
+        if let Some(sym) = param_sym {
+            let param_val = fn_value.get_nth_param(i as u32);
+            if let Some(param_val) = param_val {
+                let val_ty = param_val.get_type();
+                let alloca = ctx
+                    .builder
+                    .build_alloca(val_ty, &param.name)
+                    .unwrap();
+                ctx.builder.build_store(alloca, param_val).unwrap();
+                ctx.locals.insert(sym.def_id, alloca);
+                ctx.local_types.insert(sym.def_id, val_ty);
+            }
+        }
+    }
+
+    // Compile body statements.
+    let mut last_val = None;
+    for (i, stmt) in c.body.iter().enumerate() {
+        let is_last = i == c.body.len() - 1;
+        if is_last {
+            if let StmtKind::Expr(expr) = &stmt.kind {
+                last_val = compile_expr(ctx, expr);
+            } else {
+                compile_stmt(ctx, stmt);
+            }
+        } else {
+            compile_stmt(ctx, stmt);
+        }
+
+        if ctx
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_some()
+        {
+            break;
+        }
+    }
+
+    if ctx
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_terminator()
+        .is_none()
+    {
+        emit_cleanup(ctx);
+        if is_void_ty(&ret_ty) {
+            ctx.builder.build_return(None).unwrap();
+        } else if let Some(val) = last_val {
+            ctx.builder.build_return(Some(&val)).unwrap();
+        } else {
             let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
             let zero = ret_llvm_ty.const_zero();
             ctx.builder.build_return(Some(&zero)).unwrap();
@@ -408,47 +556,6 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
                 ctx.locals.insert(sym.def_id, alloca);
                 ctx.local_types.insert(sym.def_id, val_ty);
             }
-        }
-    }
-
-    // String intrinsic methods: skip normal body compilation.
-    let receiver_name_for_intrinsic = type_expr_name(&m.receiver_type);
-    if receiver_name_for_intrinsic == "String" {
-        // For non-drop String methods, emit a trivial return so IR is valid.
-        // The actual implementation is handled via codegen intrinsics in compile_call.
-        if m.name != "drop" {
-            if is_void_ty(&ret_ty) {
-                ctx.builder.build_return(None).unwrap();
-            } else {
-                let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
-                ctx.builder.build_return(Some(&dummy)).unwrap();
-            }
-            return;
-        }
-    }
-    if receiver_name_for_intrinsic == "String" && m.name == "drop" {
-        if let Some(self_val) = fn_value.get_nth_param(0) {
-            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-            let i64_ty = ctx.context.i64_type();
-            let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            let self_ptr = self_val.into_pointer_value();
-            let buf_field = ctx.builder.build_struct_gep(string_ty, self_ptr, 0, "buf_field").unwrap();
-            let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
-
-            let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
-            let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
-            let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
-            ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
-
-            ctx.builder.position_at_end(free_bb);
-            if let Some(free_fn) = ctx.module.get_function("free") {
-                ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
-            }
-            ctx.builder.build_unconditional_branch(done_bb).unwrap();
-
-            ctx.builder.position_at_end(done_bb);
-            ctx.builder.build_return(None).unwrap();
-            return;
         }
     }
 
@@ -735,16 +842,7 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             emit_cleanup(ctx);
             if is_void_ty(&ret_ty) {
                 ctx.builder.build_return(None).unwrap();
-            } else if let Some(mut val) = last_val {
-                // Cast i1 → i8 for bool returns.
-                let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
-                if val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1
-                    && ret_llvm_ty.is_int_type() && ret_llvm_ty.into_int_type().get_bit_width() == 8
-                {
-                    val = ctx.builder.build_int_z_extend(
-                        val.into_int_value(), ctx.context.i8_type(), "bool_ext"
-                    ).unwrap().into();
-                }
+            } else if let Some(val) = last_val {
                 ctx.builder.build_return(Some(&val)).unwrap();
             } else {
                 let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);

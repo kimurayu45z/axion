@@ -506,6 +506,9 @@ impl<'a> InferCtx<'a> {
                 "trim" | "trim_start" | "trim_end" => {
                     return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Str)) };
                 }
+                "as_ptr" => {
+                    return Ty::Fn { params: vec![], ret: Box::new(Ty::Ptr(Box::new(Ty::Prim(PrimTy::U8)))) };
+                }
                 _ => {}
             }
         }
