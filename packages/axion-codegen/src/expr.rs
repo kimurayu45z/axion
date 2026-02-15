@@ -1035,6 +1035,35 @@ fn compile_call<'ctx>(
             }
         }
 
+        // Integer/bool hash() built-in
+        if field_name == "hash" {
+            if let Ty::Prim(p) = &inner_ty {
+                if p.is_integer() || *p == PrimTy::Bool {
+                    let val = compile_expr(ctx, inner)?;
+                    let i64_ty = ctx.context.i64_type();
+                    let extended = ctx.builder.build_int_z_extend_or_bit_cast(
+                        val.into_int_value(), i64_ty, "hash_ext"
+                    ).unwrap();
+                    return Some(extended.into());
+                }
+                if p.is_float() {
+                    let val = compile_expr(ctx, inner)?;
+                    let int_ty = match p {
+                        PrimTy::F16 | PrimTy::Bf16 => ctx.context.i16_type(),
+                        PrimTy::F32 => ctx.context.i32_type(),
+                        PrimTy::F64 => ctx.context.i64_type(),
+                        _ => ctx.context.i64_type(),
+                    };
+                    let bits = ctx.builder.build_bit_cast(val, int_ty, "hash_bits").unwrap();
+                    let i64_ty = ctx.context.i64_type();
+                    let extended = ctx.builder.build_int_z_extend_or_bit_cast(
+                        bits.into_int_value(), i64_ty, "hash_ext"
+                    ).unwrap();
+                    return Some(extended.into());
+                }
+            }
+        }
+
         // str built-in method calls
         if let Ty::Prim(PrimTy::Str) = inner_ty {
             match field_name.as_str() {
@@ -1054,6 +1083,7 @@ fn compile_call<'ctx>(
                     let (ptr, _) = extract_str_parts(ctx, val);
                     return Some(ptr.into());
                 }
+                "hash" => return compile_str_hash(ctx, inner),
                 _ => {}
             }
         }
@@ -3669,6 +3699,52 @@ fn compile_str_trim<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<Ba
     let (new_ptr, trimmed_start_len) = compile_trim_start_impl(ctx, ptr, len);
     let new_len = compile_trim_end_impl(ctx, new_ptr, trimmed_start_len);
     Some(build_str_struct(ctx, new_ptr, new_len))
+}
+
+/// Compile `s.hash()` for str → DJB2 hash over bytes
+fn compile_str_hash<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let (ptr, len) = extract_str_parts(ctx, val);
+    let i64_ty = ctx.context.i64_type();
+    let i8_ty = ctx.context.i8_type();
+
+    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
+    let loop_header = ctx.context.append_basic_block(fn_val, "hash_loop_header");
+    let loop_body = ctx.context.append_basic_block(fn_val, "hash_loop_body");
+    let loop_end = ctx.context.append_basic_block(fn_val, "hash_loop_end");
+
+    let entry_bb = ctx.builder.get_insert_block().unwrap();
+    ctx.builder.build_unconditional_branch(loop_header).unwrap();
+
+    // Loop header: h = phi(5381, h_next), i = phi(0, i_next)
+    ctx.builder.position_at_end(loop_header);
+    let phi_h = ctx.builder.build_phi(i64_ty, "h").unwrap();
+    phi_h.add_incoming(&[(&i64_ty.const_int(5381, false), entry_bb)]);
+    let phi_i = ctx.builder.build_phi(i64_ty, "i").unwrap();
+    phi_i.add_incoming(&[(&i64_ty.const_zero(), entry_bb)]);
+
+    let h = phi_h.as_basic_value().into_int_value();
+    let i = phi_i.as_basic_value().into_int_value();
+    let cond = ctx.builder.build_int_compare(IntPredicate::ULT, i, len, "hash_cond").unwrap();
+    ctx.builder.build_conditional_branch(cond, loop_body, loop_end).unwrap();
+
+    // Loop body: h = h * 33 + byte
+    ctx.builder.position_at_end(loop_body);
+    let byte_ptr = unsafe {
+        ctx.builder.build_in_bounds_gep(i8_ty, ptr, &[i], "byte_ptr").unwrap()
+    };
+    let byte = ctx.builder.build_load(i8_ty, byte_ptr, "byte").unwrap().into_int_value();
+    let byte_ext = ctx.builder.build_int_z_extend(byte, i64_ty, "byte_ext").unwrap();
+    let h_mul = ctx.builder.build_int_mul(h, i64_ty.const_int(33, false), "h_mul").unwrap();
+    let h_next = ctx.builder.build_int_add(h_mul, byte_ext, "h_next").unwrap();
+    let i_next = ctx.builder.build_int_add(i, i64_ty.const_int(1, false), "i_next").unwrap();
+    phi_h.add_incoming(&[(&h_next, loop_body)]);
+    phi_i.add_incoming(&[(&i_next, loop_body)]);
+    ctx.builder.build_unconditional_branch(loop_header).unwrap();
+
+    // Loop end: return h
+    ctx.builder.position_at_end(loop_end);
+    Some(phi_h.as_basic_value())
 }
 
 // ---------------------------------------------------------------------------

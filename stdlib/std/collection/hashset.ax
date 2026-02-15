@@ -4,7 +4,7 @@ pub struct HashSet[T]
     _size: usize
     _cap: usize
 
-impl[T] HashSet[T]
+impl[T: Hash] HashSet[T]
     fn new() -> HashSet[T]
         let s: HashSet[T] = HashSet #{_keys: 0 as Ptr[T], _states: 0 as Ptr[u8], _size: 0, _cap: 0}
         s
@@ -20,17 +20,7 @@ impl[T] HashSet[T]
             self._grow()
         if self._size * 10 > self._cap * 7
             self._grow()
-        let sz = sizeof[T]()
-        let temp = malloc(sz) as Ptr[T]
-        temp.write(key)
-        let bp = temp as Ptr[u8]
-        let mut h: usize = 5381
-        let mut hi: usize = 0
-        while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as usize)
-            hi = hi + 1
-        free(temp as Ptr[{}])
-        let mut idx = h % self._cap
+        let mut idx = (key.hash() as usize) % self._cap
         let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
@@ -49,17 +39,7 @@ impl[T] HashSet[T]
     fn contains(self, key: T) -> bool
         if self._cap == 0
             return false
-        let sz = sizeof[T]()
-        let temp = malloc(sz) as Ptr[T]
-        temp.write(key)
-        let bp = temp as Ptr[u8]
-        let mut h: usize = 5381
-        let mut hi: usize = 0
-        while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as usize)
-            hi = hi + 1
-        free(temp as Ptr[{}])
-        let mut idx = h % self._cap
+        let mut idx = (key.hash() as usize) % self._cap
         let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
@@ -75,17 +55,7 @@ impl[T] HashSet[T]
     fn remove(mut self, key: T) -> bool
         if self._cap == 0
             return false
-        let sz = sizeof[T]()
-        let temp = malloc(sz) as Ptr[T]
-        temp.write(key)
-        let bp = temp as Ptr[u8]
-        let mut h: usize = 5381
-        let mut hi: usize = 0
-        while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as usize)
-            hi = hi + 1
-        free(temp as Ptr[{}])
-        let mut idx = h % self._cap
+        let mut idx = (key.hash() as usize) % self._cap
         let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()

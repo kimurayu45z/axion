@@ -119,6 +119,21 @@ impl TypeEnv {
             }
             self.interface_impls.insert(ord_sym.def_id, ord_tys);
         }
+
+        // Hash = all numerics + str + String + bool
+        if let Some(hash_sym) = symbols.iter().find(|s| s.name == "Hash" && s.kind == SymbolKind::Interface) {
+            let mut hash_tys: Vec<Ty> = signed.iter()
+                .chain(unsigned.iter())
+                .chain(floats.iter())
+                .map(|p| Ty::Prim(*p))
+                .collect();
+            hash_tys.push(Ty::Prim(PrimTy::Str));
+            hash_tys.push(Ty::Prim(PrimTy::Bool));
+            if let Some(string_sym) = symbols.iter().find(|s| s.name == "String" && s.kind == SymbolKind::Struct) {
+                hash_tys.push(Ty::Struct { def_id: string_sym.def_id, type_args: vec![] });
+            }
+            self.interface_impls.insert(hash_sym.def_id, hash_tys);
+        }
     }
 
     /// Build the type environment from AST + resolve output.

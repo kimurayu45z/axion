@@ -1,0 +1,2 @@
+pub interface Hash
+    fn hash(self) -> u64

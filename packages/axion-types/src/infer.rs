@@ -495,6 +495,21 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Integer/bool/float hash() built-in
+        if name == "hash" {
+            match &resolved {
+                Ty::Prim(p) if matches!(p,
+                    PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128 |
+                    PrimTy::U8 | PrimTy::U16 | PrimTy::U32 | PrimTy::U64 | PrimTy::U128 |
+                    PrimTy::Isize | PrimTy::Usize | PrimTy::Bool |
+                    PrimTy::F16 | PrimTy::F32 | PrimTy::F64 | PrimTy::Bf16
+                ) => {
+                    return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::U64)) };
+                }
+                _ => {}
+            }
+        }
+
         // str built-in methods
         if let Ty::Prim(PrimTy::Str) = resolved {
             match name {
@@ -516,6 +531,9 @@ impl<'a> InferCtx<'a> {
                 }
                 "as_ptr" => {
                     return Ty::Fn { params: vec![], ret: Box::new(Ty::Ptr(Box::new(Ty::Prim(PrimTy::U8)))) };
+                }
+                "hash" => {
+                    return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::U64)) };
                 }
                 _ => {}
             }
@@ -1968,6 +1986,13 @@ impl<'a> InferCtx<'a> {
                 }
                 // If no impls registered, pass (backward compat for user-defined empty interfaces).
                 continue;
+            }
+
+            // If the type is registered in interface_impls, it passes (built-in impl).
+            if let Some(impl_tys) = self.env.interface_impls.get(iface_def_id) {
+                if impl_tys.contains(concrete_ty) {
+                    continue;
+                }
             }
 
             // For each required method, check that the concrete type has it.

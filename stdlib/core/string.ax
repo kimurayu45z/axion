@@ -155,6 +155,9 @@ impl String
         memcpy(self._ptr.offset(self._len) as Ptr[{}], other._ptr as Ptr[{}], src_len)
         self._len = new_len
 
+    fn hash(self) -> u64
+        self.as_str().hash()
+
     fn drop(mut self)
         if self._ptr.is_null() == false
             free(self._ptr as Ptr[{}])
