@@ -296,6 +296,8 @@ pub struct TypeAlias {
 pub struct ImportDecl {
     pub path: Vec<String>,
     pub members: Option<Vec<String>>,
+    /// `import pkg.module.*` — import all public symbols.
+    pub wildcard: bool,
     pub span: Span,
 }
 

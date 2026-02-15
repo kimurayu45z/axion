@@ -2774,11 +2774,19 @@ impl Parser {
             }
         }
 
+        let mut wildcard = false;
+
         while self.check(&TokenKind::Dot) {
             self.advance();
             match self.peek_kind() {
                 Some(TokenKind::LBrace) => {
                     // Grouped import: import foo.bar.{A, B, C}
+                    break;
+                }
+                Some(TokenKind::Star) => {
+                    // Wildcard import: import foo.bar.*
+                    self.advance();
+                    wildcard = true;
                     break;
                 }
                 Some(TokenKind::Ident(_)) => {
@@ -2821,6 +2829,7 @@ impl Parser {
         Some(ImportDecl {
             path,
             members,
+            wildcard,
             span: span.merge(self.prev_span()),
         })
     }
@@ -3806,6 +3815,21 @@ mod tests {
                 assert_eq!(e.names, vec!["HashMap".to_string(), "HashSet".to_string()]);
             }
             other => panic!("expected export, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_import_wildcard() {
+        let source = "import pkg.math.*\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Import(u) => {
+                assert_eq!(u.path, vec!["pkg", "math"]);
+                assert!(u.wildcard);
+                assert!(u.members.is_none());
+            }
+            other => panic!("expected import, got {:?}", other),
         }
     }
 

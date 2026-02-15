@@ -401,3 +401,51 @@ fn export_without_import_error() {
         "expected E0605 invalid_export, got: {errs:?}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Wildcard import: import pkg.module.*
+// -----------------------------------------------------------------------
+
+#[test]
+fn wildcard_import_all_public() {
+    let output = compile_sources(&[
+        (
+            "math.ax",
+            "pub fn add(a: i64, b: i64) -> i64\n    a + b\n\npub fn sub(a: i64, b: i64) -> i64\n    a - b\n",
+        ),
+        (
+            "main.ax",
+            "import pkg.math.*\n\nfn main() -> i64\n    add(1, sub(3, 1))\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+#[test]
+fn wildcard_import_skips_private() {
+    let output = compile_sources(&[
+        (
+            "math.ax",
+            "pub fn add(a: i64, b: i64) -> i64\n    a + b\n\nfn secret() -> i64\n    42\n",
+        ),
+        (
+            "main.ax",
+            "import pkg.math.*\n\nfn main() -> i64\n    secret()\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    // `secret` is private, so it should NOT be imported by wildcard.
+    // We expect an "undefined variable" error from the resolver.
+    assert!(!errs.is_empty(), "expected errors for private symbol, got none");
+}
+
+#[test]
+fn wildcard_std_import() {
+    let output = compile_sources_with_prelude(&[(
+        "main.ax",
+        "import std.math.*\n\nfn main() -> i64\n    min[i64](1, 2)\n",
+    )]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}

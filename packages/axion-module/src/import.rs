@@ -58,46 +58,60 @@ pub fn resolve_in_order(
             let dep_exports = &exports[dep_idx];
 
             // Find which names this module imports from the dependency.
-            let requested = collect_imports_from(&modules[idx], &modules[dep_idx]);
+            let (requested, is_wildcard) =
+                collect_imports_from(&modules[idx], &modules[dep_idx]);
 
-            for req_name in &requested {
-                // Find the symbol in the dependency's exports.
-                if let Some(export) = dep_exports.iter().find(|e| e.name == *req_name) {
-                    // Check visibility: private symbols can't be imported.
+            if is_wildcard {
+                // Wildcard import: import all public symbols from the dependency.
+                for export in dep_exports {
                     if export.vis == Visibility::Private {
-                        diagnostics.push(errors::private_import(
-                            req_name,
-                            &modules[dep_idx].module_path.display(),
-                            &modules[idx].file_path,
-                            find_import_span(&modules[idx], req_name),
-                            &modules[idx].source,
-                        ));
                         continue;
                     }
-
-                    // Check for duplicate imports.
-                    if let Some(&prev_dep) = imported_names.get(req_name) {
-                        if prev_dep != dep_idx {
-                            diagnostics.push(errors::duplicate_import(
+                    if !imported_names.contains_key(&export.name) {
+                        imported_names.insert(export.name.clone(), dep_idx);
+                        imports.push((export.name.clone(), export.def_id, export.kind));
+                    }
+                }
+            } else {
+                for req_name in &requested {
+                    // Find the symbol in the dependency's exports.
+                    if let Some(export) = dep_exports.iter().find(|e| e.name == *req_name) {
+                        // Check visibility: private symbols can't be imported.
+                        if export.vis == Visibility::Private {
+                            diagnostics.push(errors::private_import(
                                 req_name,
+                                &modules[dep_idx].module_path.display(),
                                 &modules[idx].file_path,
                                 find_import_span(&modules[idx], req_name),
                                 &modules[idx].source,
                             ));
                             continue;
                         }
-                    }
 
-                    imported_names.insert(req_name.clone(), dep_idx);
-                    imports.push((req_name.clone(), export.def_id, export.kind));
-                } else {
-                    diagnostics.push(errors::unresolved_name(
-                        req_name,
-                        &modules[dep_idx].module_path.display(),
-                        &modules[idx].file_path,
-                        find_import_span(&modules[idx], req_name),
-                        &modules[idx].source,
-                    ));
+                        // Check for duplicate imports.
+                        if let Some(&prev_dep) = imported_names.get(req_name) {
+                            if prev_dep != dep_idx {
+                                diagnostics.push(errors::duplicate_import(
+                                    req_name,
+                                    &modules[idx].file_path,
+                                    find_import_span(&modules[idx], req_name),
+                                    &modules[idx].source,
+                                ));
+                                continue;
+                            }
+                        }
+
+                        imported_names.insert(req_name.clone(), dep_idx);
+                        imports.push((req_name.clone(), export.def_id, export.kind));
+                    } else {
+                        diagnostics.push(errors::unresolved_name(
+                            req_name,
+                            &modules[dep_idx].module_path.display(),
+                            &modules[idx].file_path,
+                            find_import_span(&modules[idx], req_name),
+                            &modules[idx].source,
+                        ));
+                    }
                 }
             }
         }
@@ -194,8 +208,12 @@ fn extract_exports(resolved: &ResolveOutput) -> Vec<Export> {
 }
 
 /// Collect the names that module `source` imports from module `target`.
-fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
+///
+/// Returns `(names, is_wildcard)`. When `is_wildcard` is true, all public
+/// symbols from the target should be imported (names will be empty).
+fn collect_imports_from(source: &Module, target: &Module) -> (Vec<String>, bool) {
     let mut names = Vec::new();
+    let mut wildcard = false;
     let target_path = &target.module_path.0;
 
     for item in &source.ast.items {
@@ -207,6 +225,12 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
             } else {
                 &import_decl.path[..]
             };
+
+            // Case 0: `import pkg.math.*` — wildcard import
+            if import_decl.wildcard && segments == target_path.as_slice() {
+                wildcard = true;
+                continue;
+            }
 
             // Check if this import targets the given module.
             // Case 1: `import pkg.math.add` → segments = ["math", "add"], target = ["math"]
@@ -232,7 +256,7 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
         }
     }
 
-    names
+    (names, wildcard)
 }
 
 /// Validate `import std.*` declarations in a module against the std exports map.
@@ -252,9 +276,12 @@ fn validate_std_imports(
                 continue;
             }
             // Expect at least `std.<module>.<name>` (3 segments),
-            // or `std.<module>.{names}` (2 segments with members).
+            // or `std.<module>.{names}` (2 segments with members),
+            // or `std.<module>.*` (2 segments with wildcard).
             let has_members = import_decl.members.is_some();
-            if import_decl.path.len() < 3 && !(import_decl.path.len() == 2 && has_members) {
+            if import_decl.path.len() < 3
+                && !(import_decl.path.len() == 2 && (has_members || import_decl.wildcard))
+            {
                 let path_str = import_decl.path.join(".");
                 diagnostics.push(errors::unresolved_module(
                     &path_str,
@@ -279,6 +306,16 @@ fn validate_std_imports(
                     continue;
                 }
             };
+
+            // Wildcard import: import all public symbols from the std module.
+            if import_decl.wildcard {
+                for export in mod_exports {
+                    if export.vis != Visibility::Private {
+                        extra_imports.push((export.name.clone(), export.def_id, export.kind));
+                    }
+                }
+                continue;
+            }
 
             // Collect requested names: either grouped `{a, b}` or the last path segment.
             let names: Vec<&str> = if let Some(ref members) = import_decl.members {
