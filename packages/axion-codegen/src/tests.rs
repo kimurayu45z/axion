@@ -2545,7 +2545,7 @@ fn main() -> usize
 #[test]
 fn compile_btreemap_new() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let m = BTreeMap[i64, i64].new()
     m.len()
 ";
@@ -2556,7 +2556,7 @@ fn main() -> i64
 #[test]
 fn compile_btreeset_new() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = BTreeSet[i64].new()
     s.len()
 ";

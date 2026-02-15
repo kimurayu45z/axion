@@ -3,3 +3,70 @@ pub fn println(s: str) with IO
 
 pub fn print(s: str) with IO
     {}
+
+pub enum IoError
+    NotFound
+    PermissionDenied
+    AlreadyExists
+    IsDirectory
+    InvalidInput
+    TooManyOpenFiles
+    NoSpace
+    Other(code: i32)
+
+fn _errno_to_io_error(code: i32) -> IoError
+    if code == 2
+        return IoError.NotFound
+    if code == 13
+        return IoError.PermissionDenied
+    if code == 17
+        return IoError.AlreadyExists
+    if code == 21
+        return IoError.IsDirectory
+    if code == 22
+        return IoError.InvalidInput
+    if code == 24
+        return IoError.TooManyOpenFiles
+    if code == 28
+        return IoError.NoSpace
+    IoError.Other(code)
+
+pub struct File
+    _handle: Ptr[{}]
+
+impl File
+    fn open(path: str, mode: str) -> Result[File, IoError] with IO
+        let path_buf = malloc(path.len() + 1) as Ptr[u8]
+        memcpy(path_buf as Ptr[{}], path.as_ptr() as Ptr[{}], path.len())
+        path_buf.offset(path.len()).write(0 as u8)
+        let mode_buf = malloc(mode.len() + 1) as Ptr[u8]
+        memcpy(mode_buf as Ptr[{}], mode.as_ptr() as Ptr[{}], mode.len())
+        mode_buf.offset(mode.len()).write(0 as u8)
+        let handle = fopen(path_buf, mode_buf)
+        let err_code = __error().read()
+        free(path_buf as Ptr[{}])
+        free(mode_buf as Ptr[{}])
+        if handle.is_null()
+            return Result[File, IoError].Err(_errno_to_io_error(err_code))
+        Result[File, IoError].Ok(File #{_handle: handle})
+
+    fn read_all(self) -> String with IO
+        let mut result = String.new()
+        let buf_size: usize = 1024
+        let buf = malloc(buf_size) as Ptr[u8]
+        let mut n = fread(buf as Ptr[{}], 1, buf_size, self._handle)
+        while n > 0
+            result.push(str_from_raw(buf, n))
+            n = fread(buf as Ptr[{}], 1, buf_size, self._handle)
+        free(buf as Ptr[{}])
+        result
+
+    fn write_str(self, data: str) -> usize with IO
+        if data.len() == 0
+            return 0
+        fwrite(data.as_ptr() as Ptr[{}], 1, data.len(), self._handle)
+
+    fn close(mut self) with IO
+        if self._handle.is_null() == false
+            fclose(self._handle)
+            self._handle = 0 as Ptr[{}]

@@ -1,4 +1,5 @@
 import ffi.*
+import option.*
 
 pub struct Array[T]
     _ptr: Ptr[T]
@@ -88,6 +89,62 @@ impl[T] Array[T]
             self._ptr.offset(right).write(l)
             left = left + 1
             right = right - 1
+
+    fn get(self, index: usize) -> Option[T]
+        if index >= self._len
+            return Option[T].None
+        Option[T].Some(self._ptr.offset(index).read())
+
+    fn map[U](self, f: Fn(T) -> U) -> Array[U]
+        let mut result: Array[U] = Array[U].new()
+        let mut i: usize = 0
+        while i < self._len
+            result.push(f(self._ptr.offset(i).read()))
+            i = i + 1
+        result
+
+    fn filter(self, f: Fn(T) -> bool) -> Array[T]
+        let mut result: Array[T] = Array[T].new()
+        let mut i: usize = 0
+        while i < self._len
+            let item = self._ptr.offset(i).read()
+            if f(item)
+                result.push(item)
+            i = i + 1
+        result
+
+    fn fold[A](self, init: A, f: Fn(A, T) -> A) -> A
+        let mut acc = init
+        let mut i: usize = 0
+        while i < self._len
+            acc = f(acc, self._ptr.offset(i).read())
+            i = i + 1
+        acc
+
+    fn any(self, f: Fn(T) -> bool) -> bool
+        let mut i: usize = 0
+        while i < self._len
+            if f(self._ptr.offset(i).read())
+                return true
+            i = i + 1
+        false
+
+    fn all(self, f: Fn(T) -> bool) -> bool
+        let mut i: usize = 0
+        while i < self._len
+            if f(self._ptr.offset(i).read()) == false
+                return false
+            i = i + 1
+        true
+
+    fn find(self, f: Fn(T) -> bool) -> Option[T]
+        let mut i: usize = 0
+        while i < self._len
+            let item = self._ptr.offset(i).read()
+            if f(item)
+                return Option[T].Some(item)
+            i = i + 1
+        Option[T].None
 
     fn drop(mut self)
         if self._ptr.is_null() == false

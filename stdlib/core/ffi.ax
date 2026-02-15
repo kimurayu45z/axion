@@ -5,3 +5,9 @@ extern "C"
     fn memmove(dst: Ptr[{}], src: Ptr[{}], n: usize) -> Ptr[{}] with Unsafe
     fn memcpy(dst: Ptr[{}], src: Ptr[{}], n: usize) -> Ptr[{}] with Unsafe
     fn memcmp(a: Ptr[{}], b: Ptr[{}], n: usize) -> i32 with Unsafe
+    fn fopen(path: Ptr[u8], mode: Ptr[u8]) -> Ptr[{}] with Unsafe, IO
+    fn fclose(file: Ptr[{}]) -> i32 with Unsafe, IO
+    fn fread(buf: Ptr[{}], size: usize, count: usize, file: Ptr[{}]) -> usize with Unsafe, IO
+    fn fwrite(buf: Ptr[{}], size: usize, count: usize, file: Ptr[{}]) -> usize with Unsafe, IO
+    // TODO: __error() is macOS only. Linux: __errno_location(), Windows: _errno()
+    fn __error() -> Ptr[i32] with Unsafe

@@ -25,8 +25,8 @@ pub fn core_module_sources() -> Vec<(&'static str, &'static str)> {
         ("range", PRELUDE_RANGE),
         ("math", PRELUDE_MATH),
         ("str", PRELUDE_STR),
-        ("string", PRELUDE_STRING),
         ("array", PRELUDE_ARRAY),
+        ("string", PRELUDE_STRING),
         ("ord", PRELUDE_ORD),
     ]
 }
@@ -83,8 +83,8 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
         ("range", PRELUDE_RANGE, true),
         ("math", PRELUDE_MATH, true),
         ("str", PRELUDE_STR, true),
-        ("string", PRELUDE_STRING, true),
         ("array", PRELUDE_ARRAY, true),
+        ("string", PRELUDE_STRING, true),
         ("ord", PRELUDE_ORD, true),
         ("collection", STD_COLLECTION_HASHMAP, false),
         ("collection", STD_COLLECTION_HASHSET, false),
@@ -129,7 +129,7 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
         "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
         PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STR,
-        PRELUDE_STRING, PRELUDE_ARRAY, PRELUDE_ORD, user_source
+        PRELUDE_ARRAY, PRELUDE_STRING, PRELUDE_ORD, user_source
     );
     let prelude_lines = PRELUDE_FFI.lines().count()
         + PRELUDE_NUMBER.lines().count()
@@ -139,8 +139,8 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
         + PRELUDE_RANGE.lines().count()
         + PRELUDE_MATH.lines().count()
         + PRELUDE_STR.lines().count()
-        + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
+        + PRELUDE_STRING.lines().count()
         + PRELUDE_ORD.lines().count()
         + 11;
     (combined, prelude_lines)
@@ -153,7 +153,7 @@ pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
         "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
         PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STR,
-        PRELUDE_STRING, PRELUDE_ARRAY, PRELUDE_ORD,
+        PRELUDE_ARRAY, PRELUDE_STRING, PRELUDE_ORD,
         STD_COLLECTION_HASHMAP, STD_COLLECTION_HASHSET,
         STD_COLLECTION_BTREEMAP, STD_COLLECTION_BTREESET,
         user_source
@@ -166,8 +166,8 @@ pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
         + PRELUDE_RANGE.lines().count()
         + PRELUDE_MATH.lines().count()
         + PRELUDE_STR.lines().count()
-        + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
+        + PRELUDE_STRING.lines().count()
         + PRELUDE_ORD.lines().count()
         + STD_COLLECTION_HASHMAP.lines().count()
         + STD_COLLECTION_HASHSET.lines().count()

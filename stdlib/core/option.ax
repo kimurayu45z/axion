@@ -18,6 +18,16 @@ impl[T] Option[T]
             Option[T].Some(v) => f(v)
             Option[T].None => Option[U].None
 
+    fn or(self, other: Option[T]) -> Option[T]
+        match self
+            Option[T].Some(v) => Option[T].Some(v)
+            Option[T].None => other
+
+    fn or_else(self, f: Fn() -> Option[T]) -> Option[T]
+        match self
+            Option[T].Some(v) => Option[T].Some(v)
+            Option[T].None => f()
+
     fn is_some(self) -> bool
         match self
             Option[T].Some(_) => true

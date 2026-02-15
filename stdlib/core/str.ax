@@ -48,3 +48,36 @@ pub(pkg) fn _bytes_ends_with(hay: Ptr[u8], hay_len: usize, suffix: Ptr[u8], suff
     if suffix_len == 0
         return true
     memcmp(hay.offset(hay_len - suffix_len) as Ptr[{}], suffix as Ptr[{}], suffix_len) == 0
+
+pub(pkg) fn _bytes_index_of(hay: Ptr[u8], hay_len: usize, needle: Ptr[u8], needle_len: usize) -> isize with Unsafe
+    if needle_len == 0
+        return 0
+    if needle_len > hay_len
+        return 0 - 1
+    let end = hay_len - needle_len + 1
+    let mut i: usize = 0
+    while i < end
+        if memcmp(hay.offset(i) as Ptr[{}], needle as Ptr[{}], needle_len) == 0
+            return i as isize
+        i = i + 1
+    0 - 1
+
+pub(pkg) fn _to_uppercase(src: Ptr[u8], len: usize, dst: Ptr[u8]) with Unsafe
+    let mut i: usize = 0
+    while i < len
+        let b = src.offset(i).read()
+        if b >= (97 as u8) && b <= (122 as u8)
+            dst.offset(i).write(b - (32 as u8))
+        else
+            dst.offset(i).write(b)
+        i = i + 1
+
+pub(pkg) fn _to_lowercase(src: Ptr[u8], len: usize, dst: Ptr[u8]) with Unsafe
+    let mut i: usize = 0
+    while i < len
+        let b = src.offset(i).read()
+        if b >= (65 as u8) && b <= (90 as u8)
+            dst.offset(i).write(b + (32 as u8))
+        else
+            dst.offset(i).write(b)
+        i = i + 1

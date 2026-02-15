@@ -1,26 +1,76 @@
 pub struct BTreeSet[T]
-    _root: i64
-    _size: i64
+    _keys: Ptr[T]
+    _size: usize
+    _cap: usize
 
 impl[T] BTreeSet[T]
     fn new() -> BTreeSet[T]
-        let s: BTreeSet[T] = BTreeSet #{_root: 0, _size: 0}
+        let s: BTreeSet[T] = BTreeSet #{_keys: 0 as Ptr[T], _size: 0, _cap: 0}
         s
 
-    fn len(self) -> i64
+    fn len(self) -> usize
         self._size
 
     fn is_empty(self) -> bool
         self._size == 0
 
+    fn _lower_bound(self, key: T) -> usize
+        let mut lo: usize = 0
+        let mut hi = self._size
+        while lo < hi
+            let mid = lo + (hi - lo) / 2
+            if self._keys.offset(mid).read() < key
+                lo = mid + 1
+            else
+                hi = mid
+        lo
+
     fn insert(mut self, key: T) -> bool
-        false
+        let idx = self._lower_bound(key)
+        let mut found = false
+        if idx < self._size
+            found = self._keys.offset(idx).read() == key
+        if found
+            return false
+        if self._size == self._cap
+            self._grow()
+        let shift = self._size - idx
+        if shift > 0
+            memmove(self._keys.offset(idx + 1) as Ptr[{}], self._keys.offset(idx) as Ptr[{}], shift * sizeof[T]())
+        self._keys.offset(idx).write(key)
+        self._size = self._size + 1
+        true
 
     fn contains(self, key: T) -> bool
-        false
+        let idx = self._lower_bound(key)
+        if idx >= self._size
+            return false
+        self._keys.offset(idx).read() == key
 
     fn remove(mut self, key: T) -> bool
-        false
+        let idx = self._lower_bound(key)
+        if idx >= self._size
+            return false
+        if self._keys.offset(idx).read() != key
+            return false
+        let shift = self._size - idx - 1
+        if shift > 0
+            memmove(self._keys.offset(idx) as Ptr[{}], self._keys.offset(idx + 1) as Ptr[{}], shift * sizeof[T]())
+        self._size = self._size - 1
+        true
+
+    fn _grow(mut self)
+        let old_cap = self._cap
+        let old_keys = self._keys
+        let mut new_cap = old_cap * 2
+        if new_cap < 8
+            new_cap = 8
+        self._keys = malloc(new_cap * sizeof[T]()) as Ptr[T]
+        self._cap = new_cap
+        if old_cap > 0
+            memcpy(self._keys as Ptr[{}], old_keys as Ptr[{}], self._size * sizeof[T]())
+            free(old_keys as Ptr[{}])
 
     fn drop(mut self)
-        {}
+        if self._keys.is_null() == false
+            free(self._keys as Ptr[{}])

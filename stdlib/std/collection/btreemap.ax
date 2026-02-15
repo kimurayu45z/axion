@@ -1,29 +1,95 @@
 pub struct BTreeMap[K, V]
-    _root: i64
-    _size: i64
+    _keys: Ptr[K]
+    _values: Ptr[V]
+    _size: usize
+    _cap: usize
 
 impl[K, V] BTreeMap[K, V]
     fn new() -> BTreeMap[K, V]
-        let m: BTreeMap[K, V] = BTreeMap #{_root: 0, _size: 0}
+        let m: BTreeMap[K, V] = BTreeMap #{_keys: 0 as Ptr[K], _values: 0 as Ptr[V], _size: 0, _cap: 0}
         m
 
-    fn len(self) -> i64
+    fn len(self) -> usize
         self._size
 
     fn is_empty(self) -> bool
         self._size == 0
 
+    fn _lower_bound(self, key: K) -> usize
+        let mut lo: usize = 0
+        let mut hi = self._size
+        while lo < hi
+            let mid = lo + (hi - lo) / 2
+            if self._keys.offset(mid).read() < key
+                lo = mid + 1
+            else
+                hi = mid
+        lo
+
     fn insert(mut self, key: K, value: V)
-        {}
+        let idx = self._lower_bound(key)
+        let mut found = false
+        if idx < self._size
+            found = self._keys.offset(idx).read() == key
+        if found
+            self._values.offset(idx).write(value)
+            return
+        if self._size == self._cap
+            self._grow()
+        let shift = self._size - idx
+        if shift > 0
+            memmove(self._keys.offset(idx + 1) as Ptr[{}], self._keys.offset(idx) as Ptr[{}], shift * sizeof[K]())
+            memmove(self._values.offset(idx + 1) as Ptr[{}], self._values.offset(idx) as Ptr[{}], shift * sizeof[V]())
+        self._keys.offset(idx).write(key)
+        self._values.offset(idx).write(value)
+        self._size = self._size + 1
 
     fn get(self, key: K) -> Option[V]
-        Option[V].None
+        let idx = self._lower_bound(key)
+        if idx >= self._size
+            return Option[V].None
+        if self._keys.offset(idx).read() != key
+            return Option[V].None
+        Option[V].Some(self._values.offset(idx).read())
 
     fn contains_key(self, key: K) -> bool
-        false
+        let idx = self._lower_bound(key)
+        if idx >= self._size
+            return false
+        self._keys.offset(idx).read() == key
 
     fn remove(mut self, key: K) -> Option[V]
-        Option[V].None
+        let idx = self._lower_bound(key)
+        if idx >= self._size
+            return Option[V].None
+        if self._keys.offset(idx).read() != key
+            return Option[V].None
+        let val = self._values.offset(idx).read()
+        let shift = self._size - idx - 1
+        if shift > 0
+            memmove(self._keys.offset(idx) as Ptr[{}], self._keys.offset(idx + 1) as Ptr[{}], shift * sizeof[K]())
+            memmove(self._values.offset(idx) as Ptr[{}], self._values.offset(idx + 1) as Ptr[{}], shift * sizeof[V]())
+        self._size = self._size - 1
+        Option[V].Some(val)
+
+    fn _grow(mut self)
+        let old_cap = self._cap
+        let old_keys = self._keys
+        let old_values = self._values
+        let mut new_cap = old_cap * 2
+        if new_cap < 8
+            new_cap = 8
+        self._keys = malloc(new_cap * sizeof[K]()) as Ptr[K]
+        self._values = malloc(new_cap * sizeof[V]()) as Ptr[V]
+        self._cap = new_cap
+        if old_cap > 0
+            memcpy(self._keys as Ptr[{}], old_keys as Ptr[{}], self._size * sizeof[K]())
+            memcpy(self._values as Ptr[{}], old_values as Ptr[{}], self._size * sizeof[V]())
+            free(old_keys as Ptr[{}])
+            free(old_values as Ptr[{}])
 
     fn drop(mut self)
-        {}
+        if self._keys.is_null() == false
+            free(self._keys as Ptr[{}])
+        if self._values.is_null() == false
+            free(self._values as Ptr[{}])

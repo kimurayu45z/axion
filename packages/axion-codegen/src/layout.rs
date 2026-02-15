@@ -153,14 +153,17 @@ fn struct_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, def_id: DefId, type_args: &[Ty])
     }
     if type_name == Some("BTreeMap") {
         return ctx.context.struct_type(&[
-            ctx.context.i64_type().into(), // root
+            ctx.context.ptr_type(AddressSpace::default()).into(), // keys
+            ctx.context.ptr_type(AddressSpace::default()).into(), // values
             ctx.context.i64_type().into(), // size
+            ctx.context.i64_type().into(), // cap
         ], false).into();
     }
     if type_name == Some("BTreeSet") {
         return ctx.context.struct_type(&[
-            ctx.context.i64_type().into(), // root
+            ctx.context.ptr_type(AddressSpace::default()).into(), // keys
             ctx.context.i64_type().into(), // size
+            ctx.context.i64_type().into(), // cap
         ], false).into();
     }
 

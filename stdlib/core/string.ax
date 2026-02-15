@@ -1,5 +1,7 @@
 import ffi.*
 import str.*
+import option.*
+import array.*
 
 pub struct String
     _ptr: Ptr[u8]
@@ -80,6 +82,78 @@ impl String
 
     fn trim_end(self) -> str
         _trim_end_str(self._ptr, self._len)
+
+    fn index_of(self, needle: str) -> Option[usize]
+        let pos = _bytes_index_of(self._ptr, self._len, needle.as_ptr(), needle.len())
+        if pos >= 0
+            Option[usize].Some(pos as usize)
+        else
+            Option[usize].None
+
+    fn split(self, sep: str) -> Array[str]
+        let mut result: Array[str] = Array[str].new()
+        let sep_len = sep.len()
+        if sep_len == 0
+            result.push(self.as_str())
+            return result
+        let mut start: usize = 0
+        while start <= self._len
+            let remaining = self._len - start
+            let pos = _bytes_index_of(self._ptr.offset(start), remaining, sep.as_ptr(), sep_len)
+            if pos >= 0
+                result.push(str_from_raw(self._ptr.offset(start), pos as usize))
+                start = start + (pos as usize) + sep_len
+            if pos < 0
+                result.push(str_from_raw(self._ptr.offset(start), remaining))
+                start = self._len + 1
+        result
+
+    fn replace(self, old: str, new_str: str) -> String
+        let mut result = String.new()
+        let old_len = old.len()
+        if old_len == 0
+            return String.from(self.as_str())
+        let mut start: usize = 0
+        while start < self._len
+            let remaining = self._len - start
+            let pos = _bytes_index_of(self._ptr.offset(start), remaining, old.as_ptr(), old_len)
+            if pos < 0
+                result.push(str_from_raw(self._ptr.offset(start), remaining))
+                start = self._len
+            if pos > 0
+                result.push(str_from_raw(self._ptr.offset(start), pos as usize))
+            if pos >= 0
+                result.push(new_str)
+                start = start + (pos as usize) + old_len
+        result
+
+    fn to_uppercase(self) -> String
+        if self._len == 0
+            return String.new()
+        let buf = malloc(self._len) as Ptr[u8]
+        _to_uppercase(self._ptr, self._len, buf)
+        String #{_ptr: buf, _len: self._len, _cap: self._len}
+
+    fn to_lowercase(self) -> String
+        if self._len == 0
+            return String.new()
+        let buf = malloc(self._len) as Ptr[u8]
+        _to_lowercase(self._ptr, self._len, buf)
+        String #{_ptr: buf, _len: self._len, _cap: self._len}
+
+    fn push_string(mut self, other: String)
+        let src_len = other._len
+        if src_len == 0
+            return
+        let new_len = self._len + src_len
+        if new_len > self._cap
+            let mut new_cap = self._cap * 2
+            if new_len > new_cap
+                new_cap = new_len
+            self._ptr = realloc(self._ptr as Ptr[{}], new_cap) as Ptr[u8]
+            self._cap = new_cap
+        memcpy(self._ptr.offset(self._len) as Ptr[{}], other._ptr as Ptr[{}], src_len)
+        self._len = new_len
 
     fn drop(mut self)
         if self._ptr.is_null() == false
