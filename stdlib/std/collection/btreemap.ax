@@ -4,7 +4,7 @@ pub struct BTreeMap[K, V]
     _size: usize
     _cap: usize
 
-impl[K, V] BTreeMap[K, V]
+impl[K: Ord, V] BTreeMap[K, V]
     fn new() -> BTreeMap[K, V]
         let m: BTreeMap[K, V] = BTreeMap #{_keys: 0 as Ptr[K], _values: 0 as Ptr[V], _size: 0, _cap: 0}
         m

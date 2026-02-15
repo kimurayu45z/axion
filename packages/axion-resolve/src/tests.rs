@@ -172,8 +172,10 @@ fn resolve_match_arms() {
 fn main()
     let x = 1
     match x
-        0 => 0
-        n => n + 1
+        0 =>
+            0
+        n =>
+            n + 1
 ";
     let (_, diags) = resolve_source(src);
     assert!(errors(&diags).is_empty(), "errors: {diags:?}");
@@ -307,8 +309,10 @@ enum Shape
 fn main()
     let s = 0
     match s
-        0 => 0
-        _ => 1
+        0 =>
+            0
+        _ =>
+            1
 ";
     let (_, diags) = resolve_source(src);
     assert!(errors(&diags).is_empty(), "errors: {diags:?}");

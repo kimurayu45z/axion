@@ -3,7 +3,7 @@ pub struct BTreeSet[T]
     _size: usize
     _cap: usize
 
-impl[T] BTreeSet[T]
+impl[T: Ord] BTreeSet[T]
     fn new() -> BTreeSet[T]
         let s: BTreeSet[T] = BTreeSet #{_keys: 0 as Ptr[T], _size: 0, _cap: 0}
         s

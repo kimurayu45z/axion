@@ -1754,16 +1754,8 @@ impl Parser {
                 }
                 self.expect(&TokenKind::FatArrow)?;
 
-                let body = if self.check(&TokenKind::Newline) || self.check(&TokenKind::Indent) {
-                    self.skip_newlines();
-                    self.parse_block()?
-                } else {
-                    let e = self.parse_expr()?;
-                    vec![Stmt {
-                        span: e.span,
-                        kind: StmtKind::Expr(e),
-                    }]
-                };
+                self.skip_newlines();
+                let body = self.parse_block()?;
 
                 arms.push(HandleArm {
                     effect,
@@ -2116,17 +2108,9 @@ impl Parser {
 
         self.expect(&TokenKind::FatArrow)?;
 
-        // Body: either single expression on same line, or indented block
-        let body = if self.check(&TokenKind::Newline) || self.check(&TokenKind::Indent) {
-            self.skip_newlines();
-            self.parse_block()?
-        } else {
-            let expr = self.parse_expr()?;
-            vec![Stmt {
-                span: expr.span,
-                kind: StmtKind::Expr(expr),
-            }]
-        };
+        // Body: always require indented block after =>
+        self.skip_newlines();
+        let body = self.parse_block()?;
 
         Some(MatchArm {
             pattern,
@@ -3293,7 +3277,7 @@ mod tests {
 
     #[test]
     fn test_parse_match_basic() {
-        let source = "fn main()\n    match x\n        1 => \"one\"\n        2 => \"two\"\n        _ => \"other\"\n";
+        let source = "fn main()\n    match x\n        1 =>\n            \"one\"\n        2 =>\n            \"two\"\n        _ =>\n            \"other\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3316,7 +3300,7 @@ mod tests {
 
     #[test]
     fn test_parse_match_with_guard() {
-        let source = "fn main()\n    match x\n        n if n > 0 => \"positive\"\n        _ => \"non-positive\"\n";
+        let source = "fn main()\n    match x\n        n if n > 0 =>\n            \"positive\"\n        _ =>\n            \"non-positive\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3340,7 +3324,7 @@ mod tests {
 
     #[test]
     fn test_parse_match_tuple_pattern() {
-        let source = "fn main()\n    match point\n        {0, 0} => \"origin\"\n        {x, y} => \"other\"\n";
+        let source = "fn main()\n    match point\n        {0, 0} =>\n            \"origin\"\n        {x, y} =>\n            \"other\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -3372,7 +3356,7 @@ mod tests {
 
     #[test]
     fn test_parse_match_constructor_pattern() {
-        let source = "fn main()\n    match shape\n        Shape.Circle(r) => r\n        Shape.Point => 0\n";
+        let source = "fn main()\n    match shape\n        Shape.Circle(r) =>\n            r\n        Shape.Point =>\n            0\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4158,7 +4142,7 @@ mod tests {
 
     #[test]
     fn test_parse_or_pattern_simple() {
-        let source = "fn main()\n    match x\n        1 | 2 => \"small\"\n        _ => \"other\"\n";
+        let source = "fn main()\n    match x\n        1 | 2 =>\n            \"small\"\n        _ =>\n            \"other\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4182,7 +4166,7 @@ mod tests {
 
     #[test]
     fn test_parse_or_pattern_triple() {
-        let source = "fn main()\n    match x\n        1 | 2 | 3 => \"small\"\n";
+        let source = "fn main()\n    match x\n        1 | 2 | 3 =>\n            \"small\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4206,7 +4190,7 @@ mod tests {
 
     #[test]
     fn test_parse_or_pattern_constructor() {
-        let source = "fn main()\n    match s\n        Shape.Circle(r) | Shape.Point => \"ok\"\n";
+        let source = "fn main()\n    match s\n        Shape.Circle(r) | Shape.Point =>\n            \"ok\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4234,7 +4218,7 @@ mod tests {
 
     #[test]
     fn test_parse_rest_pattern() {
-        let source = "fn main()\n    match t\n        {a, ..} => a\n";
+        let source = "fn main()\n    match t\n        {a, ..} =>\n            a\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4262,7 +4246,7 @@ mod tests {
 
     #[test]
     fn test_parse_rest_pattern_named() {
-        let source = "fn main()\n    match t\n        {first, ..rest} => first\n";
+        let source = "fn main()\n    match t\n        {first, ..rest} =>\n            first\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4291,7 +4275,7 @@ mod tests {
 
     #[test]
     fn test_parse_list_pattern_empty() {
-        let source = "fn main()\n    match lst\n        [] => \"empty\"\n";
+        let source = "fn main()\n    match lst\n        [] =>\n            \"empty\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4315,7 +4299,7 @@ mod tests {
 
     #[test]
     fn test_parse_list_pattern_single() {
-        let source = "fn main()\n    match lst\n        [x] => \"one\"\n";
+        let source = "fn main()\n    match lst\n        [x] =>\n            \"one\"\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4342,7 +4326,7 @@ mod tests {
 
     #[test]
     fn test_parse_list_pattern_rest() {
-        let source = "fn main()\n    match lst\n        [first, ..rest] => first\n";
+        let source = "fn main()\n    match lst\n        [first, ..rest] =>\n            first\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4370,7 +4354,7 @@ mod tests {
 
     #[test]
     fn test_parse_struct_pattern() {
-        let source = "fn main()\n    match u\n        User #{name, age} => name\n";
+        let source = "fn main()\n    match u\n        User #{name, age} =>\n            name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4401,7 +4385,7 @@ mod tests {
 
     #[test]
     fn test_parse_struct_pattern_with_rest() {
-        let source = "fn main()\n    match u\n        User #{name, ..} => name\n";
+        let source = "fn main()\n    match u\n        User #{name, ..} =>\n            name\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4429,7 +4413,7 @@ mod tests {
 
     #[test]
     fn test_parse_struct_pattern_renamed() {
-        let source = "fn main()\n    match u\n        User #{name: n, age} => n\n";
+        let source = "fn main()\n    match u\n        User #{name: n, age} =>\n            n\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -5270,11 +5254,16 @@ mod tests {
             "\n",
             "fn describe(value: Value) -> String\n",
             "    match value\n",
-            "        Value.Int(n) if n > 0 => \"positive: {n}\"\n",
-            "        Value.Int(0) => \"zero\"\n",
-            "        Value.Str(s) | Value.Label(s) => \"text: {s}\"\n",
-            "        Value.List([first, ..rest]) => \"list\"\n",
-            "        _ => \"other\"\n",
+            "        Value.Int(n) if n > 0 =>\n",
+            "            \"positive: {n}\"\n",
+            "        Value.Int(0) =>\n",
+            "            \"zero\"\n",
+            "        Value.Str(s) | Value.Label(s) =>\n",
+            "            \"text: {s}\"\n",
+            "        Value.List([first, ..rest]) =>\n",
+            "            \"list\"\n",
+            "        _ =>\n",
+            "            \"other\"\n",
             "\n",
             "impl User\n",
             "    fn rename(mut self, new_name: String)\n",

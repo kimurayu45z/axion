@@ -549,6 +549,9 @@ impl<'a> InferCtx<'a> {
                         let subst = self.build_method_receiver_subst(&resolved, sym, &type_args);
                         if !subst.is_empty() {
                             method_ty = substitute(&method_ty, &subst);
+                            for (param_def_id, concrete_ty) in &subst {
+                                self.check_interface_bounds(*param_def_id, concrete_ty, span);
+                            }
                         }
                     }
 

@@ -575,8 +575,10 @@ enum Shape
 
 fn area(s: Shape) -> f64
     match s
-        Shape.Circle(r) => r
-        Shape.Rect(w, h) => w
+        Shape.Circle(r) =>
+            r
+        Shape.Rect(w, h) =>
+            w
 ";
     let output = check_no_errors(source);
     // The pattern bindings r, w, h should be f64.
@@ -593,7 +595,8 @@ struct Point
 
 fn check(p: Point) -> f64
     match p
-        Point #{x, y} => x
+        Point #{x, y} =>
+            x
 ";
     let output = check_no_errors(source);
     let has_f64 = output.expr_types.values().any(|ty| *ty == Ty::Prim(PrimTy::F64));
@@ -605,9 +608,12 @@ fn match_literal_pattern() {
     let source = "\
 fn check(x: i64) -> i64
     match x
-        1 => 10
-        2 => 20
-        _ => 0
+        1 =>
+            10
+        2 =>
+            20
+        _ =>
+            0
 ";
     check_no_errors(source);
 }
@@ -617,8 +623,10 @@ fn match_or_pattern() {
     let source = "\
 fn check(x: i64) -> i64
     match x
-        1 | 2 => 10
-        _ => 0
+        1 | 2 =>
+            10
+        _ =>
+            0
 ";
     check_no_errors(source);
 }
@@ -628,7 +636,8 @@ fn match_wildcard_already_works() {
     let source = "\
 fn check(x: i64) -> i64
     match x
-        _ => 0
+        _ =>
+            0
 ";
     check_no_errors(source);
 }
@@ -652,8 +661,10 @@ fn pattern_mismatch_error() {
     let source = "\
 fn check(x: i64) -> i64
     match x
-        Shape.Circle(r) => 0
-        _ => 1
+        Shape.Circle(r) =>
+            0
+        _ =>
+            1
 ";
     let diags = check_errors(source);
     assert!(diags.iter().any(|d| d.code == "E0208"));
@@ -668,8 +679,10 @@ enum Shape
 
 fn check(s: Shape) -> f64
     match s
-        Shape.Circle(r) => r
-        Shape.Rect(w, h) => w + h
+        Shape.Circle(r) =>
+            r
+        Shape.Rect(w, h) =>
+            w + h
 ";
     check_no_errors(source);
 }
@@ -955,7 +968,8 @@ fn read_file(path: i64) -> i64 with IO
 
 fn main()
     handle read_file(42)
-        IO => 0
+        IO =>
+            0
 ";
     check_no_errors(source);
 }
@@ -1174,7 +1188,7 @@ fn ptr_read_with_unsafe_ok() {
 #[test]
 fn handle_suppresses_unsafe() {
     check_no_errors(
-        "fn main() -> i64\n    let p: Ptr[i64] = Ptr[i64].null()\n    handle p.read()\n        Unsafe => 0"
+        "fn main() -> i64\n    let p: Ptr[i64] = Ptr[i64].null()\n    handle p.read()\n        Unsafe =>\n            0"
     );
 }
 

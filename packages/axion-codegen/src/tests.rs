@@ -263,10 +263,14 @@ enum Color
 
 fn color_code(c: Color) -> i64
     match c
-        Color.Red => 1
-        Color.Green => 2
-        Color.Blue => 3
-        _ => 0
+        Color.Red =>
+            1
+        Color.Green =>
+            2
+        Color.Blue =>
+            3
+        _ =>
+            0
 
 fn main() -> i64
     let c = Color.Green
@@ -285,9 +289,12 @@ enum Shape
 
 fn area(s: Shape) -> i64
     match s
-        Shape.Circle(r) => r * r
-        Shape.Rect(w, h) => w * h
-        _ => 0
+        Shape.Circle(r) =>
+            r * r
+        Shape.Rect(w, h) =>
+            w * h
+        _ =>
+            0
 
 fn main() -> i64
     let s = Shape.Rect(3, 4)
@@ -512,7 +519,8 @@ fn compile_match_tuple_bind() {
     let src = "\
 fn swap(pair: {i64, i64}) -> {i64, i64}
     match pair
-        {a, b} => {b, a}
+        {a, b} =>
+            {b, a}
 
 fn main() -> i64
     let {x, y} = swap({10, 20})
@@ -773,8 +781,10 @@ enum Option[T]
 
 fn unwrap_or(opt: Option[i64], default: i64) -> i64
     match opt
-        Option[i64].Some(v) => v
-        Option[i64].None => default
+        Option[i64].Some(v) =>
+            v
+        Option[i64].None =>
+            default
 
 fn main() -> i64
     let x = Option[i64].Some(42)
@@ -794,8 +804,10 @@ enum Option[T]
 impl Option[i64]
     fn is_some(self) -> i64
         match self
-            Option[i64].Some(_) => 1
-            Option[i64].None => 0
+            Option[i64].Some(_) =>
+                1
+            Option[i64].None =>
+                0
 
 fn main() -> i64
     let x = Option[i64].Some(10)
@@ -815,15 +827,19 @@ enum Option[T]
 
 fn option_map(opt: Option[i64], f: Fn(i64) -> i64) -> Option[i64]
     match opt
-        Option[i64].Some(v) => Option[i64].Some(f(v))
-        Option[i64].None => Option[i64].None
+        Option[i64].Some(v) =>
+            Option[i64].Some(f(v))
+        Option[i64].None =>
+            Option[i64].None
 
 fn main() -> i64
     let x = Option[i64].Some(21)
     let doubled = option_map(x, |v| v * 2)
     match doubled
-        Option[i64].Some(v) => v
-        Option[i64].None => 0
+        Option[i64].Some(v) =>
+            v
+        Option[i64].None =>
+            0
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
@@ -845,8 +861,10 @@ fn safe_div(a: i64, b: i64) -> Result[i64, i64]
 fn main() -> i64
     let r = safe_div(84, 2)
     match r
-        Result[i64, i64].Ok(v) => v
-        Result[i64, i64].Err(_) => 0
+        Result[i64, i64].Ok(v) =>
+            v
+        Result[i64, i64].Err(_) =>
+            0
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);
@@ -861,8 +879,10 @@ enum Option[T]
 
 fn unwrap_or_default(opt: Option[i64]) -> i64
     match opt
-        Option[i64].Some(v) => v
-        Option[i64].None => 0
+        Option[i64].Some(v) =>
+            v
+        Option[i64].None =>
+            0
 
 fn make_opt(i: i64) -> Option[i64]
     if i > 0
@@ -955,8 +975,10 @@ enum Option[T]
 
 fn unwrap_or[T](opt: Option[T], default: T) -> T
     match opt
-        Option[T].Some(v) => v
-        Option[T].None => default
+        Option[T].Some(v) =>
+            v
+        Option[T].None =>
+            default
 
 fn main() -> i64
     let x = Option[i64].Some(42)
@@ -974,10 +996,14 @@ fn main() -> i64
     let x = Option[i64].Some(42)
     let y = Option[i64].None
     match x
-        Option[i64].Some(v) => match y
-            Option[i64].Some(_) => 0
-            Option[i64].None => v
-        Option[i64].None => 0
+        Option[i64].Some(v) =>
+            match y
+                Option[i64].Some(_) =>
+                    0
+                Option[i64].None =>
+                    v
+        Option[i64].None =>
+            0
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 42);
@@ -990,11 +1016,15 @@ fn main() -> i64
     let ok = Result[i64, i64].Ok(10)
     let err = Result[i64, i64].Err(99)
     let a = match ok
-        Result[i64, i64].Ok(v) => v
-        Result[i64, i64].Err(_) => 0
+        Result[i64, i64].Ok(v) =>
+            v
+        Result[i64, i64].Err(_) =>
+            0
     let b = match err
-        Result[i64, i64].Ok(_) => 0
-        Result[i64, i64].Err(e) => e
+        Result[i64, i64].Ok(_) =>
+            0
+        Result[i64, i64].Err(e) =>
+            e
     a + b
 ";
     let result = compile_and_run_with_prelude(src);
@@ -1236,8 +1266,10 @@ fn main() -> i64
     let x = Result[i64, i64].Err(10)
     let r = x.map_err[i64](|e: i64| e * 2)
     match r
-        Result[i64, i64].Ok(_) => 0
-        Result[i64, i64].Err(e) => e
+        Result[i64, i64].Ok(_) =>
+            0
+        Result[i64, i64].Err(e) =>
+            e
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 20);
@@ -2574,7 +2606,8 @@ fn risky() -> i64 with Unsafe
 
 fn main() -> i64
     handle risky()
-        Unsafe => 0
+        Unsafe =>
+            0
 ";
     let result = compile_and_run(src);
     assert_eq!(result.exit_code, 42);

@@ -834,7 +834,6 @@ impl<'src> Lexer<'src> {
                 | TokenKind::AmpAmp
                 | TokenKind::PipePipe
                 | TokenKind::Arrow
-                | TokenKind::FatArrow
                 | TokenKind::Dot
                 | TokenKind::Comma
         )
