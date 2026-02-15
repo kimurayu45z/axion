@@ -2839,6 +2839,8 @@ impl Parser {
         self.expect(&TokenKind::Export)?;
 
         let mut names = Vec::new();
+        let mut path = None;
+        let mut wildcard = false;
 
         if self.check(&TokenKind::LBrace) {
             // Grouped export: export {HashMap, HashSet}
@@ -2855,12 +2857,63 @@ impl Parser {
             }
             self.expect(&TokenKind::RBrace)?;
         } else {
-            // Single export: export HashMap
-            names.push(self.expect_any_ident()?);
+            // Could be: `export name`, or `export core.ffi.*`, or `export core.ffi.{a, b}`
+            let first = self.expect_any_ident()?;
+
+            if self.check(&TokenKind::Dot) {
+                // Path-based export: export core.ffi.* or export core.ffi.{a, b}
+                let mut segments = vec![first];
+                while self.check(&TokenKind::Dot) {
+                    self.advance();
+                    match self.peek_kind() {
+                        Some(TokenKind::Star) => {
+                            self.advance();
+                            wildcard = true;
+                            break;
+                        }
+                        Some(TokenKind::LBrace) => {
+                            // Grouped: export core.ffi.{a, b}
+                            self.advance();
+                            if !self.check(&TokenKind::RBrace) {
+                                names.push(self.expect_any_ident()?);
+                                while self.check(&TokenKind::Comma) {
+                                    self.advance();
+                                    if self.check(&TokenKind::RBrace) {
+                                        break;
+                                    }
+                                    names.push(self.expect_any_ident()?);
+                                }
+                            }
+                            self.expect(&TokenKind::RBrace)?;
+                            break;
+                        }
+                        Some(TokenKind::Ident(_)) => {
+                            if let TokenKind::Ident(s) = self.advance_and_get() {
+                                segments.push(s);
+                            }
+                        }
+                        Some(TokenKind::TypeIdent(_)) => {
+                            if let TokenKind::TypeIdent(s) = self.advance_and_get() {
+                                segments.push(s);
+                            }
+                        }
+                        _ => {
+                            self.error("expected identifier, `*`, or `{` in export path");
+                            break;
+                        }
+                    }
+                }
+                path = Some(segments);
+            } else {
+                // Simple export: export name
+                names.push(first);
+            }
         }
 
         Some(ExportDecl {
             names,
+            path,
+            wildcard,
             span: span.merge(self.prev_span()),
         })
     }

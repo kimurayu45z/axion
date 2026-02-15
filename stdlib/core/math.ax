@@ -1,16 +1,18 @@
-fn min[T: Number](a: T, b: T) -> T
+import number.*
+
+pub fn min[T: Number](a: T, b: T) -> T
     if a < b
         a
     else
         b
 
-fn max[T: Number](a: T, b: T) -> T
+pub fn max[T: Number](a: T, b: T) -> T
     if a > b
         a
     else
         b
 
-fn clamp[T: Number](x: T, lo: T, hi: T) -> T
+pub fn clamp[T: Number](x: T, lo: T, hi: T) -> T
     if x < lo
         lo
     else
@@ -19,13 +21,13 @@ fn clamp[T: Number](x: T, lo: T, hi: T) -> T
         else
             x
 
-fn abs[T: SNumber](x: T) -> T
+pub fn abs[T: SNumber](x: T) -> T
     if x < 0
         0 - x
     else
         x
 
-fn sign[T: SNumber](x: T) -> T
+pub fn sign[T: SNumber](x: T) -> T
     if x > 0
         1
     else
@@ -34,7 +36,7 @@ fn sign[T: SNumber](x: T) -> T
         else
             0
 
-fn pow[T: Int](base: T, exp: T) -> T
+pub fn pow[T: Int](base: T, exp: T) -> T
     let mut result = 1
     let mut i = 0
     while i < exp
@@ -42,7 +44,7 @@ fn pow[T: Int](base: T, exp: T) -> T
         i = i + 1
     result
 
-fn gcd[T: UInt](a: T, b: T) -> T
+pub fn gcd[T: UInt](a: T, b: T) -> T
     let mut x = a
     let mut y = b
     while y > 0
@@ -51,20 +53,20 @@ fn gcd[T: UInt](a: T, b: T) -> T
         x = t
     x
 
-fn lcm[T: UInt](a: T, b: T) -> T
+pub fn lcm[T: UInt](a: T, b: T) -> T
     let g = gcd[T](a, b)
     if g == 0
         0
     else
         a / g * b
 
-fn is_even[T: Int](x: T) -> bool
+pub fn is_even[T: Int](x: T) -> bool
     if x % 2 == 0
         true
     else
         false
 
-fn is_odd[T: Int](x: T) -> bool
+pub fn is_odd[T: Int](x: T) -> bool
     if x % 2 == 0
         false
     else

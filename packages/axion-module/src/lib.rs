@@ -8,7 +8,7 @@ use std::path::Path;
 
 use axion_diagnostics::Diagnostic;
 use axion_resolve::def_id::{DefId, SymbolKind};
-use axion_resolve::prelude::{prelude_source_with_boundaries, aux_std_modules, StdFileBoundary};
+use axion_resolve::prelude::{self, aux_std_modules};
 use axion_resolve::ResolveOutput;
 use axion_syntax::SourceFile;
 use axion_types::ExternalTypeInfo;
@@ -67,130 +67,211 @@ pub fn compile_sources_with_prelude(sources: &[(&str, &str)]) -> CompilationOutp
     compile_modules_with_prelude(modules)
 }
 
-fn compile_modules_with_prelude(modules: Vec<Module>) -> CompilationOutput {
-    // 1. Parse & resolve prelude as a single unit, keeping per-file boundaries.
-    let (src, boundaries) = prelude_source_with_boundaries();
-    let (prelude_ast, _) = axion_parser::parse(&src, "<prelude>");
-    let (prelude_resolved, _) = axion_resolve::resolve_single(&prelude_ast, "<prelude>", &src);
+fn compile_modules_with_prelude(user_modules: Vec<Module>) -> CompilationOutput {
+    // 1. Build core modules from embedded sources.
+    let mut core_modules = build_core_modules();
 
-    // 2. Extract prelude exports: only auto-import module symbols.
-    //    Non-auto-import modules (collection) are available via `use std.*` only.
-    let prelude_imports: Vec<(String, DefId, SymbolKind)> = prelude_resolved
+    // 2. Build dependency graph and resolve core modules in topological order.
+    let (core_graph, core_graph_diags) = graph::ModuleGraph::build(&core_modules);
+    // (Ignore graph diags for core modules — they are known-good.)
+    let _ = core_graph_diags;
+    let core_order = core_graph.topological_sort();
+    let (core_exports, _core_resolve_diags) = import::resolve_in_order(
+        &mut core_modules,
+        &core_graph,
+        &core_order,
+        &[],
+        0,
+        &HashMap::new(),
+    );
+
+    // 3. The prelude module's exports are the prelude_imports for user modules.
+    let prelude_idx = core_modules
+        .iter()
+        .position(|m| m.module_path.0 == vec!["prelude"])
+        .expect("prelude module not found in core modules");
+    let prelude_imports: Vec<(String, DefId, SymbolKind)> = core_exports[prelude_idx]
+        .iter()
+        .map(|e| (e.name.clone(), e.def_id, e.kind))
+        .collect();
+
+    // 4. Calculate total DefId offset from all core modules.
+    let total_core_symbols: u32 = core_modules
+        .iter()
+        .filter_map(|m| m.resolved.as_ref())
+        .map(|r| r.symbols.len() as u32)
+        .sum();
+
+    // 5. Build std_exports from core module exports (for `import std.xxx.*` validation).
+    let mut std_exports: HashMap<String, Vec<Export>> = HashMap::new();
+    for (idx, module) in core_modules.iter().enumerate() {
+        if idx != prelude_idx {
+            let mod_name = module.module_path.display();
+            std_exports
+                .entry(mod_name)
+                .or_default()
+                .extend(core_exports[idx].iter().cloned());
+        }
+    }
+
+    // 6–8. Build prelude TypeEnv from all core modules, then compile
+    //       collection and aux modules (collecting their type info too).
+    let mut prelude_ext = ExternalTypeInfo::default();
+    for module in &core_modules {
+        if let Some(ref resolved) = module.resolved {
+            let mut unify = axion_types::unify::UnifyContext::new();
+            let env =
+                axion_types::env::TypeEnv::build(&module.ast, resolved, &mut unify);
+            for (id, info) in &env.defs {
+                prelude_ext.defs.insert(*id, info.clone());
+            }
+            for (id, fields) in &env.struct_fields {
+                prelude_ext.struct_fields.insert(*id, fields.clone());
+            }
+            for (id, variants) in &env.enum_variants {
+                prelude_ext.enum_variants.insert(*id, variants.clone());
+            }
+        }
+    }
+
+    // 6. Compile collection modules with prelude_imports injected.
+    let mut next_def_offset = total_core_symbols;
+    let collection_sources: &[(&str, &str)] = &[
+        ("collection", prelude::STD_COLLECTION_HASHMAP),
+        ("collection", prelude::STD_COLLECTION_HASHSET),
+        ("collection", prelude::STD_COLLECTION_BTREEMAP),
+        ("collection", prelude::STD_COLLECTION_BTREESET),
+    ];
+    for (group, src) in collection_sources {
+        let file_name = format!("<std.{}>", group);
+        let (ast, _) = axion_parser::parse(src, &file_name);
+        let (resolved, _) = axion_resolve::resolve(
+            &ast,
+            &file_name,
+            src,
+            next_def_offset,
+            &prelude_imports,
+        );
+        let exports = extract_exports_for_std(&resolved);
+        std_exports
+            .entry(group.to_string())
+            .or_default()
+            .extend(exports);
+        // Also build type info for collection modules.
+        let mut unify = axion_types::unify::UnifyContext::new();
+        let env = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify);
+        for (id, info) in &env.defs {
+            prelude_ext.defs.insert(*id, info.clone());
+        }
+        for (id, fields) in &env.struct_fields {
+            prelude_ext.struct_fields.insert(*id, fields.clone());
+        }
+        for (id, variants) in &env.enum_variants {
+            prelude_ext.enum_variants.insert(*id, variants.clone());
+        }
+        next_def_offset += resolved.symbols.len() as u32;
+    }
+
+    // 7. Compile auxiliary std modules (io, log) with prelude_imports.
+    for aux in aux_std_modules() {
+        let file_name = format!("<std.{}>", aux.name);
+        let (ast, _) = axion_parser::parse(aux.source, &file_name);
+        let (resolved, _) = axion_resolve::resolve(
+            &ast,
+            &file_name,
+            aux.source,
+            next_def_offset,
+            &prelude_imports,
+        );
+        let exports = extract_exports_for_std(&resolved);
+        std_exports
+            .entry(aux.name.clone())
+            .or_default()
+            .extend(exports);
+        // Also build type info for aux modules.
+        let mut unify = axion_types::unify::UnifyContext::new();
+        let env = axion_types::env::TypeEnv::build(&ast, &resolved, &mut unify);
+        for (id, info) in &env.defs {
+            prelude_ext.defs.insert(*id, info.clone());
+        }
+        for (id, fields) in &env.struct_fields {
+            prelude_ext.struct_fields.insert(*id, fields.clone());
+        }
+        for (id, variants) in &env.enum_variants {
+            prelude_ext.enum_variants.insert(*id, variants.clone());
+        }
+        next_def_offset += resolved.symbols.len() as u32;
+    }
+
+    // 9. Compile user modules with prelude context.
+    compile_modules_inner(
+        user_modules,
+        &prelude_imports,
+        next_def_offset,
+        &prelude_ext,
+        &std_exports,
+    )
+}
+
+/// Build core Module objects from embedded stdlib sources.
+fn build_core_modules() -> Vec<Module> {
+    let mut modules = Vec::new();
+
+    for (idx, (name, src)) in prelude::core_module_sources().iter().enumerate() {
+        let file_name = format!("<core.{}>", name);
+        let (ast, _) = axion_parser::parse(src, &file_name);
+        modules.push(Module {
+            file_id: idx as u16,
+            module_path: ModulePath(vec![name.to_string()]),
+            file_path: file_name,
+            source: src.to_string(),
+            ast,
+            resolved: None,
+            type_output: None,
+        });
+    }
+
+    // Add prelude.ax module.
+    let prelude_src = prelude::PRELUDE_AX;
+    let (prelude_ast, _) = axion_parser::parse(prelude_src, "<prelude>");
+    modules.push(Module {
+        file_id: modules.len() as u16,
+        module_path: ModulePath(vec!["prelude".to_string()]),
+        file_path: "<prelude>".to_string(),
+        source: prelude_src.to_string(),
+        ast: prelude_ast,
+        resolved: None,
+        type_output: None,
+    });
+
+    modules
+}
+
+/// Extract exports from a resolved std module (collection, io, log).
+fn extract_exports_for_std(resolved: &ResolveOutput) -> Vec<Export> {
+    resolved
         .symbols
         .iter()
         .filter(|s| {
             matches!(
                 s.kind,
-                SymbolKind::Struct
+                SymbolKind::Function
+                    | SymbolKind::Struct
                     | SymbolKind::Enum
-                    | SymbolKind::Function
-                    | SymbolKind::Interface
-                    | SymbolKind::TypeAlias
+                    | SymbolKind::ExternFn
                     | SymbolKind::Constructor
                     | SymbolKind::Method
-                    | SymbolKind::ExternFn
-            )
+                    | SymbolKind::Interface
+                    | SymbolKind::TypeAlias
+            ) && s.span != axion_syntax::Span::dummy()
         })
-        .filter(|s| {
-            // Exclude symbols from non-auto-import modules.
-            let start = s.span.start as usize;
-            !boundaries.iter().any(|b| start >= b.start && start < b.end && !b.auto_import)
+        .map(|s| Export {
+            name: s.name.clone(),
+            def_id: s.def_id,
+            kind: s.kind,
+            vis: s.vis.clone(),
         })
-        .map(|s| (s.name.clone(), s.def_id, s.kind))
-        .collect();
-
-    let prelude_def_id_offset = prelude_resolved.symbols.len() as u32;
-
-    // 3. Build per-std-module exports map for `use std.*` validation.
-    let mut std_exports = build_std_exports(&prelude_resolved, &boundaries);
-
-    // 3b. Parse auxiliary std modules (io, log) separately and add their exports.
-    //     These modules are NOT auto-imported — they're only available via `use std.*`.
-    let mut aux_def_id_offset = prelude_def_id_offset;
-    for aux in aux_std_modules() {
-        let (aux_ast, _) = axion_parser::parse(aux.source, &format!("<std.{}>", aux.name));
-        let (aux_resolved, _) = axion_resolve::resolve_single(&aux_ast, &format!("<std.{}>", aux.name), aux.source);
-        let aux_exports: Vec<Export> = aux_resolved
-            .symbols
-            .iter()
-            .filter(|s| {
-                matches!(
-                    s.kind,
-                    SymbolKind::Function
-                        | SymbolKind::Struct
-                        | SymbolKind::Enum
-                        | SymbolKind::ExternFn
-                        | SymbolKind::Constructor
-                        | SymbolKind::Method
-                ) && s.span != axion_syntax::Span::dummy()
-            })
-            .map(|s| Export {
-                name: s.name.clone(),
-                // Offset the DefId to avoid collision with prelude DefIds.
-                def_id: DefId(s.def_id.0 + aux_def_id_offset),
-                kind: s.kind,
-                vis: s.vis.clone(),
-            })
-            .collect();
-        std_exports.insert(aux.name.clone(), aux_exports);
-        aux_def_id_offset += aux_resolved.symbols.len() as u32;
-    }
-
-    // 4. Build prelude TypeEnv for ExternalTypeInfo.
-    let mut prelude_unify = axion_types::unify::UnifyContext::new();
-    let prelude_type_env =
-        axion_types::env::TypeEnv::build(&prelude_ast, &prelude_resolved, &mut prelude_unify);
-    let prelude_ext = build_prelude_external_type_info(&prelude_type_env);
-
-    // 5. Compile modules with prelude context.
-    compile_modules_inner(modules, &prelude_imports, prelude_def_id_offset, &prelude_ext, &std_exports)
-}
-
-/// Build per-std-module export map from the combined prelude resolve output.
-///
-/// Uses the byte boundaries to determine which stdlib file each symbol belongs to.
-fn build_std_exports(
-    resolved: &ResolveOutput,
-    boundaries: &[StdFileBoundary],
-) -> HashMap<String, Vec<Export>> {
-    let mut map: HashMap<String, Vec<Export>> = HashMap::new();
-
-    for sym in &resolved.symbols {
-        // Skip builtins (dummy spans).
-        if sym.span == axion_syntax::Span::dummy() {
-            continue;
-        }
-
-        // Determine which stdlib file this symbol belongs to based on span.start.
-        let start = sym.span.start as usize;
-        if let Some(boundary) = boundaries.iter().find(|b| start >= b.start && start < b.end) {
-            map.entry(boundary.name.clone())
-                .or_default()
-                .push(Export {
-                    name: sym.name.clone(),
-                    def_id: sym.def_id,
-                    kind: sym.kind,
-                    vis: sym.vis.clone(),
-                });
-        }
-    }
-
-    map
-}
-
-/// Build ExternalTypeInfo from a prelude TypeEnv.
-fn build_prelude_external_type_info(env: &axion_types::env::TypeEnv) -> ExternalTypeInfo {
-    let mut ext = ExternalTypeInfo::default();
-    for (id, info) in &env.defs {
-        ext.defs.insert(*id, info.clone());
-    }
-    for (id, fields) in &env.struct_fields {
-        ext.struct_fields.insert(*id, fields.clone());
-    }
-    for (id, variants) in &env.enum_variants {
-        ext.enum_variants.insert(*id, variants.clone());
-    }
-    ext
+        .collect()
 }
 
 /// Backward-compatible: compile without prelude.

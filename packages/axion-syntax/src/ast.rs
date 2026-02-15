@@ -305,7 +305,12 @@ pub struct ImportDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportDecl {
+    /// Simple re-export: `export name` or `export {name1, name2}`.
     pub names: Vec<String>,
+    /// Module path re-export: `export core.ffi.*` or `export core.ffi.{HashMap, HashSet}`.
+    pub path: Option<Vec<String>>,
+    /// Wildcard re-export: `export core.ffi.*`.
+    pub wildcard: bool,
     pub span: Span,
 }
 

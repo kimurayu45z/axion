@@ -1,3 +1,5 @@
+import ffi.*
+
 pub struct Array[T]
     _ptr: Ptr[T]
     _len: usize

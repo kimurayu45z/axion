@@ -29,24 +29,37 @@ impl ModuleGraph {
 
         for (i, module) in modules.iter().enumerate() {
             for item in &module.ast.items {
-                if let ItemKind::Import(import_decl) = &item.kind {
-                    if let Some(target_idx) =
-                        resolve_import_target(&import_decl.path, &path_to_idx, modules)
-                    {
-                        if !dependencies[i].contains(&target_idx) {
-                            dependencies[i].push(target_idx);
+                match &item.kind {
+                    ItemKind::Import(import_decl) => {
+                        if let Some(target_idx) =
+                            resolve_import_target(&import_decl.path, &path_to_idx, modules)
+                        {
+                            if !dependencies[i].contains(&target_idx) {
+                                dependencies[i].push(target_idx);
+                            }
+                        } else if import_decl.path.first().map(|s| s.as_str()) != Some("std") {
+                            let path_str = import_decl.path.join(".");
+                            diagnostics.push(errors::unresolved_module(
+                                &path_str,
+                                &module.file_path,
+                                import_decl.span,
+                                &module.source,
+                            ));
                         }
-                    } else if import_decl.path.first().map(|s| s.as_str()) != Some("std") {
-                        // Build the module path string for the error.
-                        // Skip `std.*` paths — they are validated in resolve_in_order.
-                        let path_str = import_decl.path.join(".");
-                        diagnostics.push(errors::unresolved_module(
-                            &path_str,
-                            &module.file_path,
-                            import_decl.span,
-                            &module.source,
-                        ));
                     }
+                    ItemKind::Export(export_decl) => {
+                        // Export with path creates a dependency on the target module.
+                        if let Some(ref path) = export_decl.path {
+                            if let Some(target_idx) =
+                                resolve_import_target(path, &path_to_idx, modules)
+                            {
+                                if !dependencies[i].contains(&target_idx) {
+                                    dependencies[i].push(target_idx);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -163,7 +176,7 @@ fn resolve_import_target(
     // For now, treat the first segment as the package root marker.
     // The remaining path segments (minus the last one, which is the imported name)
     // form the target module path.
-    let segments = if path[0] == "pkg" || path[0] == "std" {
+    let segments = if matches!(path[0].as_str(), "pkg" | "std" | "core") {
         &path[1..]
     } else {
         &path[..]
@@ -208,7 +221,7 @@ fn find_import_span_for_dep(
     for item in &source_module.ast.items {
         if let ItemKind::Import(import_decl) = &item.kind {
             let segments = if !import_decl.path.is_empty()
-                && (import_decl.path[0] == "pkg" || import_decl.path[0] == "std")
+                && matches!(import_decl.path[0].as_str(), "pkg" | "std" | "core")
             {
                 &import_decl.path[1..]
             } else {

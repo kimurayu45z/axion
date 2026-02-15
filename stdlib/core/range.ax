@@ -1,3 +1,6 @@
+import option.*
+import iter.*
+
 pub struct Range[T]
     mut start: T
     end: T

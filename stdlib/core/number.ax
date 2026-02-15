@@ -1,11 +1,11 @@
-interface SInt
+pub interface SInt
 
-interface UInt
+pub interface UInt
 
-interface Int
+pub interface Int
 
-interface Float
+pub interface Float
 
-interface SNumber
+pub interface SNumber
 
-interface Number
+pub interface Number

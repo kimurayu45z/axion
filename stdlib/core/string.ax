@@ -1,3 +1,6 @@
+import ffi.*
+import str.*
+
 pub struct String
     _ptr: Ptr[u8]
     _len: usize

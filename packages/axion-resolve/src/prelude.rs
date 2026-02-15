@@ -10,6 +10,25 @@ pub const PRELUDE_STR: &str = include_str!("../../../stdlib/core/str.ax");
 pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/core/string.ax");
 pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/core/array.ax");
 
+/// The prelude manifest file.
+pub const PRELUDE_AX: &str = include_str!("../../../stdlib/prelude.ax");
+
+/// Core module source entries: (module_name, source).
+pub fn core_module_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("ffi", PRELUDE_FFI),
+        ("number", PRELUDE_NUMBER),
+        ("option", PRELUDE_OPTION),
+        ("result", PRELUDE_RESULT),
+        ("iter", PRELUDE_ITER),
+        ("range", PRELUDE_RANGE),
+        ("math", PRELUDE_MATH),
+        ("str", PRELUDE_STR),
+        ("string", PRELUDE_STRING),
+        ("array", PRELUDE_ARRAY),
+    ]
+}
+
 /// Std module sources.
 pub const STD_IO: &str = include_str!("../../../stdlib/std/io.ax");
 pub const STD_LOG: &str = include_str!("../../../stdlib/std/log.ax");

@@ -132,35 +132,78 @@ pub fn resolve_in_order(
         // Process `export` declarations: re-export imported symbols.
         for item in &modules[idx].ast.items {
             if let ItemKind::Export(export_decl) = &item.kind {
-                for name in &export_decl.names {
-                    // Check if this name was imported.
-                    if let Some(import) = imports.iter().find(|(n, _, _)| n == name) {
-                        // Add as a public re-export.
-                        module_exports.push(Export {
-                            name: import.0.clone(),
-                            def_id: import.1,
-                            kind: import.2,
-                            vis: Visibility::Pub,
-                        });
-                        // For struct/enum re-exports, also re-export associated methods/constructors.
-                        if matches!(import.2, SymbolKind::Struct | SymbolKind::Enum) {
-                            let prefix = format!("{}.", name);
-                            for assoc in imports.iter().filter(|(n, _, _)| n.starts_with(&prefix)) {
-                                module_exports.push(Export {
-                                    name: assoc.0.clone(),
-                                    def_id: assoc.1,
-                                    kind: assoc.2,
-                                    vis: Visibility::Pub,
-                                });
+                if let Some(ref path) = export_decl.path {
+                    // Path-based export: `export core.ffi.*` or `export core.ffi.{a, b}`
+                    // Find the target module's exports via the dependency graph.
+                    if let Some(&target_idx) = graph.path_to_idx.get(
+                        &resolve_export_path(path),
+                    ) {
+                        let dep_exports = &exports[target_idx];
+                        if export_decl.wildcard {
+                            // Export all public symbols from the target module.
+                            for export in dep_exports {
+                                if export.vis == Visibility::Pub {
+                                    module_exports.push(export.clone());
+                                }
+                            }
+                        } else {
+                            // Export specific names from the target module.
+                            for name in &export_decl.names {
+                                if let Some(export) = dep_exports.iter().find(|e| e.name == *name) {
+                                    module_exports.push(Export {
+                                        name: export.name.clone(),
+                                        def_id: export.def_id,
+                                        kind: export.kind,
+                                        vis: Visibility::Pub,
+                                    });
+                                    // For struct/enum, also export associated methods/constructors.
+                                    if matches!(export.kind, SymbolKind::Struct | SymbolKind::Enum) {
+                                        let prefix = format!("{}.", name);
+                                        for assoc in dep_exports.iter().filter(|e| e.name.starts_with(&prefix)) {
+                                            module_exports.push(Export {
+                                                name: assoc.name.clone(),
+                                                def_id: assoc.def_id,
+                                                kind: assoc.kind,
+                                                vis: Visibility::Pub,
+                                            });
+                                        }
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        diagnostics.push(errors::invalid_export(
-                            name,
-                            &modules[idx].file_path,
-                            export_decl.span,
-                            &modules[idx].source,
-                        ));
+                    }
+                } else {
+                    // Simple re-export: `export name` or `export {name1, name2}`
+                    for name in &export_decl.names {
+                        // Check if this name was imported.
+                        if let Some(import) = imports.iter().find(|(n, _, _)| n == name) {
+                            // Add as a public re-export.
+                            module_exports.push(Export {
+                                name: import.0.clone(),
+                                def_id: import.1,
+                                kind: import.2,
+                                vis: Visibility::Pub,
+                            });
+                            // For struct/enum re-exports, also re-export associated methods/constructors.
+                            if matches!(import.2, SymbolKind::Struct | SymbolKind::Enum) {
+                                let prefix = format!("{}.", name);
+                                for assoc in imports.iter().filter(|(n, _, _)| n.starts_with(&prefix)) {
+                                    module_exports.push(Export {
+                                        name: assoc.0.clone(),
+                                        def_id: assoc.1,
+                                        kind: assoc.2,
+                                        vis: Visibility::Pub,
+                                    });
+                                }
+                            }
+                        } else {
+                            diagnostics.push(errors::invalid_export(
+                                name,
+                                &modules[idx].file_path,
+                                export_decl.span,
+                                &modules[idx].source,
+                            ));
+                        }
                     }
                 }
             }
@@ -219,7 +262,7 @@ fn collect_imports_from(source: &Module, target: &Module) -> (Vec<String>, bool)
     for item in &source.ast.items {
         if let ItemKind::Import(import_decl) = &item.kind {
             let segments = if !import_decl.path.is_empty()
-                && (import_decl.path[0] == "pkg" || import_decl.path[0] == "std")
+                && matches!(import_decl.path[0].as_str(), "pkg" | "std" | "core")
             {
                 &import_decl.path[1..]
             } else {
@@ -353,6 +396,22 @@ fn validate_std_imports(
     }
 
     extra_imports
+}
+
+/// Resolve an export path like `["core", "ffi"]` to a module path `["ffi"]`.
+///
+/// Strips recognized package prefixes ("core", "std", "pkg") if present.
+fn resolve_export_path(path: &[String]) -> Vec<String> {
+    if !path.is_empty()
+        && matches!(
+            path[0].as_str(),
+            "core" | "std" | "pkg"
+        )
+    {
+        path[1..].to_vec()
+    } else {
+        path.to_vec()
+    }
 }
 
 /// Find the span of an import declaration that imports a given name.
