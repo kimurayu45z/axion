@@ -151,6 +151,9 @@ impl UnifyContext {
             // Slice
             (Ty::Slice(inner1), Ty::Slice(inner2)) => self.unify(inner1, inner2),
 
+            // Ptr
+            (Ty::Ptr(inner1), Ty::Ptr(inner2)) => self.unify(inner1, inner2),
+
             // Array
             (Ty::Array { elem: e1, len: l1 }, Ty::Array { elem: e2, len: l2 }) => {
                 if l1 != l2 {
@@ -198,6 +201,7 @@ impl UnifyContext {
                 ret: Box::new(self.resolve(ret)),
             },
             Ty::Ref(inner) => Ty::Ref(Box::new(self.resolve(inner))),
+            Ty::Ptr(inner) => Ty::Ptr(Box::new(self.resolve(inner))),
             Ty::Slice(inner) => Ty::Slice(Box::new(self.resolve(inner))),
             Ty::Array { elem, len } => Ty::Array {
                 elem: Box::new(self.resolve(elem)),
@@ -241,7 +245,7 @@ impl UnifyContext {
             Ty::Fn { params, ret } => {
                 params.iter().any(|t| self.occurs_in(v, t)) || self.occurs_in(v, ret)
             }
-            Ty::Ref(inner) | Ty::Slice(inner) | Ty::Array { elem: inner, .. } => self.occurs_in(v, inner),
+            Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Slice(inner) | Ty::Array { elem: inner, .. } => self.occurs_in(v, inner),
             _ => false,
         }
     }

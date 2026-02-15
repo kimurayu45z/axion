@@ -529,6 +529,13 @@ pub enum ExprKind {
         expr: Box<Expr>,
         index: Box<Expr>,
     },
+    /// Cast expression: `expr as Type`
+    Cast {
+        expr: Box<Expr>,
+        target: TypeExpr,
+    },
+    /// sizeof[T]() — byte size of type T
+    SizeOf(TypeExpr),
 }
 
 /// Part of an interpolated string.

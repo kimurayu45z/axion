@@ -347,6 +347,11 @@ impl<'a> BorrowCtx<'a> {
                 self.check_expr(inner);
                 self.check_expr(index);
             }
+            ExprKind::Cast { expr: inner, .. } => {
+                self.check_expr(inner);
+            }
+            // sizeof has no runtime expression to check.
+            ExprKind::SizeOf(_) => {}
             // Literals don't need borrow checking.
             ExprKind::IntLit(..)
             | ExprKind::FloatLit(..)

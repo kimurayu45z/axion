@@ -91,6 +91,8 @@ pub fn compile_expr<'ctx>(
         ExprKind::TypeApp { expr: inner, .. } => compile_expr(ctx, inner),
         ExprKind::ArrayLit(elems) => compile_array_lit(ctx, expr, elems),
         ExprKind::Index { expr: arr_expr, index } => compile_index(ctx, expr, arr_expr, index),
+        ExprKind::Cast { expr: inner, target } => compile_cast(ctx, inner, target),
+        ExprKind::SizeOf(type_expr) => compile_sizeof(ctx, type_expr),
         ExprKind::MapLit(_) | ExprKind::SetLit(_) => None,
         ExprKind::Handle { .. } | ExprKind::Try(_) | ExprKind::Await(_) => None,
     }
@@ -244,6 +246,139 @@ fn compile_string_lit<'ctx>(
     Some(str_val.into())
 }
 
+fn compile_cast<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    inner: &Expr,
+    _target: &TypeExpr,
+) -> Option<BasicValueEnum<'ctx>> {
+    let val = compile_expr(ctx, inner)?;
+    let source_ty = get_expr_ty(ctx, inner);
+    // The cast expression's overall type is the target type (already computed by infer).
+    // We recover it by looking up the parent expr's type. Since we don't have the parent
+    // expr here, we use the TypeExpr to determine the target. But since lower_type_expr
+    // is pub(crate) in axion_types, we reconstruct the target Ty from the inferred type
+    // environment. The target_ty is whatever the type system says the Cast expr produces.
+    // Actually the caller already resolved types — we need the target from the overall
+    // expression type. Let's use a simpler approach: determine from the source and target.
+
+    // For now, resolve the target type by matching on _target TypeExpr.
+    let mut target_ty = resolve_cast_target_ty(ctx, _target);
+    if !ctx.current_subst.is_empty() {
+        target_ty = axion_mono::specialize::substitute(&target_ty, &ctx.current_subst);
+    }
+    let target_llvm = ty_to_llvm(ctx, &target_ty);
+
+    match (&source_ty, &target_ty) {
+        // Ptr -> integer: ptrtoint
+        (Ty::Ptr(_), Ty::Prim(p)) if p.is_integer() => {
+            let int_ty = target_llvm.into_int_type();
+            Some(ctx.builder.build_ptr_to_int(val.into_pointer_value(), int_ty, "ptrtoint").unwrap().into())
+        }
+        // integer -> Ptr: inttoptr
+        (Ty::Prim(p), Ty::Ptr(_)) if p.is_integer() => {
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            Some(ctx.builder.build_int_to_ptr(val.into_int_value(), ptr_ty, "inttoptr").unwrap().into())
+        }
+        // Ptr -> Ptr: no-op (LLVM opaque pointers)
+        (Ty::Ptr(_), Ty::Ptr(_)) => Some(val),
+        // int -> int: trunc or extend
+        (Ty::Prim(src_p), Ty::Prim(dst_p)) if src_p.is_integer() && dst_p.is_integer() => {
+            let src_bits = val.into_int_value().get_type().get_bit_width();
+            let dst_ty = target_llvm.into_int_type();
+            let dst_bits = dst_ty.get_bit_width();
+            if src_bits == dst_bits {
+                Some(val)
+            } else if src_bits < dst_bits {
+                if src_p.is_signed() {
+                    Some(ctx.builder.build_int_s_extend(val.into_int_value(), dst_ty, "sext").unwrap().into())
+                } else {
+                    Some(ctx.builder.build_int_z_extend(val.into_int_value(), dst_ty, "zext").unwrap().into())
+                }
+            } else {
+                Some(ctx.builder.build_int_truncate(val.into_int_value(), dst_ty, "trunc").unwrap().into())
+            }
+        }
+        // float -> int
+        (Ty::Prim(src_p), Ty::Prim(dst_p)) if src_p.is_float() && dst_p.is_integer() => {
+            let dst_ty = target_llvm.into_int_type();
+            if dst_p.is_signed() {
+                Some(ctx.builder.build_float_to_signed_int(val.into_float_value(), dst_ty, "fptosi").unwrap().into())
+            } else {
+                Some(ctx.builder.build_float_to_unsigned_int(val.into_float_value(), dst_ty, "fptoui").unwrap().into())
+            }
+        }
+        // int -> float
+        (Ty::Prim(src_p), Ty::Prim(dst_p)) if src_p.is_integer() && dst_p.is_float() => {
+            let dst_ty = target_llvm.into_float_type();
+            if src_p.is_signed() {
+                Some(ctx.builder.build_signed_int_to_float(val.into_int_value(), dst_ty, "sitofp").unwrap().into())
+            } else {
+                Some(ctx.builder.build_unsigned_int_to_float(val.into_int_value(), dst_ty, "uitofp").unwrap().into())
+            }
+        }
+        // float -> float
+        (Ty::Prim(src_p), Ty::Prim(dst_p)) if src_p.is_float() && dst_p.is_float() => {
+            let dst_ty = target_llvm.into_float_type();
+            Some(ctx.builder.build_float_cast(val.into_float_value(), dst_ty, "fpcast").unwrap().into())
+        }
+        // Fallback: bitcast / no-op
+        _ => Some(val),
+    }
+}
+
+/// Resolve the target type of a cast expression from the TypeExpr.
+fn resolve_cast_target_ty(ctx: &CodegenCtx, target: &TypeExpr) -> Ty {
+    match target {
+        TypeExpr::Named { name, args, span } => {
+            if name == "Ptr" {
+                let inner = args.first()
+                    .map(|a| resolve_cast_target_ty(ctx, a))
+                    .unwrap_or(Ty::Unit);
+                return Ty::Ptr(Box::new(inner));
+            }
+            if let Some(prim) = PrimTy::from_name(name) {
+                return Ty::Prim(prim);
+            }
+            if let Some(&def_id) = ctx.resolved.resolutions.get(&span.start) {
+                let lowered_args: Vec<Ty> = args.iter()
+                    .map(|a| resolve_cast_target_ty(ctx, a))
+                    .collect();
+                if let Some(sym) = ctx.resolved.symbols.iter().find(|s| s.def_id == def_id) {
+                    match sym.kind {
+                        SymbolKind::Struct => return Ty::Struct { def_id, type_args: lowered_args },
+                        SymbolKind::Enum => return Ty::Enum { def_id, type_args: lowered_args },
+                        SymbolKind::TypeParam => return Ty::Param(def_id),
+                        _ => {}
+                    }
+                }
+            }
+            Ty::Error
+        }
+        TypeExpr::Tuple { elements, .. } => {
+            if elements.is_empty() {
+                Ty::Unit
+            } else {
+                Ty::Tuple(elements.iter().map(|e| resolve_cast_target_ty(ctx, e)).collect())
+            }
+        }
+        _ => Ty::Error,
+    }
+}
+
+fn compile_sizeof<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    type_expr: &TypeExpr,
+) -> Option<BasicValueEnum<'ctx>> {
+    let mut ty = resolve_cast_target_ty(ctx, type_expr);
+    if !ctx.current_subst.is_empty() {
+        ty = axion_mono::specialize::substitute(&ty, &ctx.current_subst);
+    }
+    let llvm_ty = ty_to_llvm(ctx, &ty);
+    let size = llvm_ty.size_of().unwrap();
+    let cast = ctx.builder.build_int_cast(size, ctx.context.i64_type(), "sizeof").unwrap();
+    Some(cast.into())
+}
+
 fn compile_ident<'ctx>(
     ctx: &mut CodegenCtx<'ctx>,
     expr: &Expr,
@@ -318,6 +453,68 @@ fn is_type_level_expr<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> bool {
         }
         ExprKind::TypeApp { expr: inner, .. } => is_type_level_expr(ctx, inner),
         _ => false,
+    }
+}
+
+/// Resolve the type of an expression by walking the AST structure, avoiding span-collision
+/// in expr_types. For Ident, uses local_tys/type_env. For Field, recurses on the object
+/// and looks up the field type from struct definition. Falls back to get_expr_ty.
+pub fn resolve_inner_ty<'ctx>(ctx: &CodegenCtx<'ctx>, expr: &Expr) -> Ty {
+    match &expr.kind {
+        ExprKind::Ident(_) => {
+            if let Some(&def_id) = ctx.resolved.resolutions.get(&expr.span.start) {
+                if let Some(ty) = ctx.local_tys.get(&def_id) {
+                    return ty.clone();
+                }
+                if let Some(info) = ctx.type_env.defs.get(&def_id) {
+                    let ty = info.ty.clone();
+                    if !ctx.current_subst.is_empty() {
+                        return axion_mono::specialize::substitute(&ty, &ctx.current_subst);
+                    }
+                    return ty;
+                }
+            }
+            get_expr_ty(ctx, expr)
+        }
+        ExprKind::Field { expr: obj, name } => {
+            let obj_ty = resolve_inner_ty(ctx, obj);
+            // Look up the field type from the struct definition.
+            if let Ty::Struct { def_id, type_args } = &obj_ty {
+                if let Some(fields) = ctx.type_env.struct_fields.get(def_id) {
+                    if let Some((_, field_ty)) = fields.iter().find(|(fname, _)| fname == name) {
+                        let mut result_ty = field_ty.clone();
+                        // Apply type_args substitution.
+                        if !type_args.is_empty() {
+                            // Collect Param DefIds from all field types to build subst.
+                            let mut param_defs = Vec::new();
+                            for (_, fty) in fields {
+                                axion_mono::specialize::collect_param_def_ids(fty, &mut param_defs);
+                            }
+                            // Deduplicate preserving order.
+                            let mut seen = std::collections::HashSet::new();
+                            param_defs.retain(|d| seen.insert(*d));
+                            // Build subst: param DefId → concrete type arg.
+                            let mut subst = std::collections::HashMap::new();
+                            for (pd, ta) in param_defs.iter().zip(type_args.iter()) {
+                                subst.insert(*pd, ta.clone());
+                            }
+                            result_ty = axion_mono::specialize::substitute(&result_ty, &subst);
+                        }
+                        if !ctx.current_subst.is_empty() {
+                            result_ty = axion_mono::specialize::substitute(&result_ty, &ctx.current_subst);
+                        }
+                        return result_ty;
+                    }
+                }
+            }
+            // For Ptr[T], built-in field methods don't apply here (they're methods not fields).
+            get_expr_ty(ctx, expr)
+        }
+        ExprKind::TypeApp { expr: inner, .. } => {
+            // TypeApp on a type name: Array[i64] → Struct { type_args: [i64] }
+            resolve_inner_ty(ctx, inner)
+        }
+        _ => get_expr_ty(ctx, expr),
     }
 }
 
@@ -706,30 +903,16 @@ fn compile_call<'ctx>(
     // or method call: obj.method(args)
     if let ExprKind::Field { expr: inner, name: field_name } = &func.kind {
         // Resolve inner type via definition to avoid span collision with the Call/Field expr.
-        let inner_ty = if let ExprKind::Ident(_) = &inner.kind {
-            ctx.resolved
-                .resolutions
-                .get(&inner.span.start)
-                .and_then(|def_id| {
-                    // Try local_tys first (locals with substitution already applied),
-                    // then type_env.defs (function params).
-                    ctx.local_tys.get(def_id).cloned().or_else(|| {
-                        ctx.type_env.defs.get(def_id).map(|info| {
-                            if ctx.current_subst.is_empty() {
-                                info.ty.clone()
-                            } else {
-                                axion_mono::specialize::substitute(&info.ty, &ctx.current_subst)
-                            }
-                        })
-                    })
-                })
-                .unwrap_or_else(|| get_expr_ty(ctx, inner))
+        // First try method_receiver_types (populated by type checker, avoids span collision).
+        let inner_ty = if let Some(recv_ty) = ctx.type_check.method_receiver_types.get(&call_expr.span.start) {
+            let ty = recv_ty.clone();
+            if ctx.current_subst.is_empty() { ty } else { axion_mono::specialize::substitute(&ty, &ctx.current_subst) }
         } else if matches!(&inner.kind, ExprKind::StringLit(_)) {
             Ty::Prim(PrimTy::Str)
         } else if matches!(&inner.kind, ExprKind::StringInterp { .. }) {
             get_string_struct_ty_codegen(ctx).unwrap_or(Ty::Prim(PrimTy::Str))
         } else {
-            get_expr_ty(ctx, inner)
+            resolve_inner_ty(ctx, inner)
         };
         // Enum variant construction only applies when the inner expr refers to the enum
         // type itself (e.g., Option[i64].Some(10)), not to an instance (e.g., x.method()).
@@ -739,6 +922,38 @@ fn compile_call<'ctx>(
                 return compile_enum_data_variant(ctx, *def_id, func, args);
             }
         }
+        // Ptr[T] intrinsic methods
+        if let Ty::Ptr(ref inner_pointee) = inner_ty {
+            let elem_llvm_ty = ty_to_llvm(ctx, inner_pointee);
+            match field_name.as_str() {
+                "read" => {
+                    let ptr = compile_expr(ctx, inner)?.into_pointer_value();
+                    return Some(ctx.builder.build_load(elem_llvm_ty, ptr, "ptr_read").unwrap());
+                }
+                "write" => {
+                    let ptr = compile_expr(ctx, inner)?.into_pointer_value();
+                    let val = compile_expr(ctx, &args[0].expr)?;
+                    ctx.builder.build_store(ptr, val).unwrap();
+                    return None;
+                }
+                "offset" => {
+                    let ptr = compile_expr(ctx, inner)?.into_pointer_value();
+                    let offset_val = compile_expr(ctx, &args[0].expr)?.into_int_value();
+                    let new_ptr = unsafe {
+                        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[offset_val], "ptr_offset").unwrap()
+                    };
+                    return Some(new_ptr.into());
+                }
+                "is_null" => {
+                    let ptr = compile_expr(ctx, inner)?.into_pointer_value();
+                    let result = ctx.builder.build_is_null(ptr, "is_null").unwrap();
+                    let i8_val = ctx.builder.build_int_z_extend(result, ctx.context.i8_type(), "bool_ext").unwrap();
+                    return Some(i8_val.into());
+                }
+                _ => {}
+            }
+        }
+
         // String intrinsic methods
         if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
             if type_name == "String" {
@@ -759,26 +974,6 @@ fn compile_call<'ctx>(
                     "trim" => return compile_string_trim(ctx, inner),
                     "trim_start" => return compile_string_trim_start(ctx, inner),
                     "trim_end" => return compile_string_trim_end(ctx, inner),
-                    _ => {}
-                }
-            }
-        }
-
-        // Array[T] intrinsic methods
-        if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
-            if type_name == "Array" {
-                let elem_ty = match &inner_ty {
-                    Ty::Struct { type_args, .. } if !type_args.is_empty() => type_args[0].clone(),
-                    _ => Ty::Prim(PrimTy::I64),
-                };
-                match field_name.as_str() {
-                    "new" if is_type_access => return compile_array_new(ctx),
-                    "len" => return compile_array_len(ctx, inner),
-                    "is_empty" => return compile_array_is_empty(ctx, inner),
-                    "push" => return compile_array_push(ctx, inner, args, &elem_ty),
-                    "pop" => return compile_array_pop(ctx, inner, &elem_ty),
-                    "first" => return compile_array_first(ctx, inner, &elem_ty),
-                    "last" => return compile_array_last(ctx, inner, &elem_ty),
                     _ => {}
                 }
             }
@@ -929,6 +1124,7 @@ fn compile_call<'ctx>(
 
                 let fn_value_opt = mono_fn.or_else(|| ctx.functions.get(&def_id).copied());
 
+
                 if let Some(fn_value) = fn_value_opt {
                     // Compile receiver (self) as first arg.
                     let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
@@ -948,6 +1144,7 @@ fn compile_call<'ctx>(
                         }
                     }
                     let ret_ty = get_expr_ty(ctx, call_expr);
+
                     if is_void_ty(&ret_ty) {
                         ctx.builder
                             .build_call(fn_value, &compiled_args, "mcall")
@@ -967,27 +1164,9 @@ fn compile_call<'ctx>(
 
     // Check for method call with turbofish: x.method[U](...)
     // where func is TypeApp { expr: Field { expr: inner, name }, type_args }
-    if let ExprKind::TypeApp { expr: type_app_inner, .. } = &func.kind {
+    if let ExprKind::TypeApp { expr: type_app_inner, type_args: turbo_type_args } = &func.kind {
         if let ExprKind::Field { expr: inner, name: field_name } = &type_app_inner.kind {
-            let inner_ty = if let ExprKind::Ident(_) = &inner.kind {
-                ctx.resolved
-                    .resolutions
-                    .get(&inner.span.start)
-                    .and_then(|def_id| {
-                        ctx.local_tys.get(def_id).cloned().or_else(|| {
-                            ctx.type_env.defs.get(def_id).map(|info| {
-                                if ctx.current_subst.is_empty() {
-                                    info.ty.clone()
-                                } else {
-                                    axion_mono::specialize::substitute(&info.ty, &ctx.current_subst)
-                                }
-                            })
-                        })
-                    })
-                    .unwrap_or_else(|| get_expr_ty(ctx, inner))
-            } else {
-                get_expr_ty(ctx, inner)
-            };
+            let inner_ty = resolve_inner_ty(ctx, inner);
             if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
                 let method_key = format!("{}.{}", type_name, field_name);
                 let method_def_id = ctx
@@ -997,10 +1176,15 @@ fn compile_call<'ctx>(
                     .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
                     .map(|s| s.def_id);
                 if let Some(def_id) = method_def_id {
-                    let type_args = match &inner_ty {
+                    // Combine receiver type_args with turbofish type_args.
+                    let mut type_args = match &inner_ty {
                         Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
                         _ => vec![],
                     };
+                    for ta in turbo_type_args {
+                        let ta_ty = lower_type_arg_codegen(ta, ctx.resolved);
+                        type_args.push(ta_ty);
+                    }
                     let mono_fn = if !type_args.is_empty() {
                         if let Some(mono) = ctx.mono_output {
                             mono.lookup(def_id, &type_args)
@@ -1946,6 +2130,7 @@ fn compile_field<'ctx>(
         // Load through pointer (struct stored as alloca).
         let obj_ty = get_expr_ty(ctx, obj);
         let llvm_ty = ty_to_llvm(ctx, &obj_ty);
+
         let gep = ctx
             .builder
             .build_struct_gep(llvm_ty, obj_val.into_pointer_value(), *field_idx as u32, "field_ptr")
@@ -3823,176 +4008,6 @@ fn get_array_elem_ty(ty: &Ty) -> Ty {
         Ty::Struct { type_args, .. } if !type_args.is_empty() => type_args[0].clone(),
         _ => Ty::Prim(PrimTy::I64),
     }
-}
-
-/// Compile `Array[T].new()` → `{ null_ptr, 0, 0 }`
-fn compile_array_new<'ctx>(ctx: &CodegenCtx<'ctx>) -> Option<BasicValueEnum<'ctx>> {
-    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.context.i64_type();
-    let struct_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-    let null = ptr_ty.const_null();
-    let zero = i64_ty.const_zero();
-    let mut sv = struct_ty.get_undef();
-    sv = ctx.builder.build_insert_value(sv, null, 0, "arr_ptr").unwrap().into_struct_value();
-    sv = ctx.builder.build_insert_value(sv, zero, 1, "arr_len").unwrap().into_struct_value();
-    sv = ctx.builder.build_insert_value(sv, zero, 2, "arr_cap").unwrap().into_struct_value();
-    Some(sv.into())
-}
-
-/// Compile `arr.len()` → extract field 1
-fn compile_array_len<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
-    let val = compile_expr(ctx, inner)?;
-    let sv = val.into_struct_value();
-    Some(ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into())
-}
-
-/// Compile `arr.is_empty()` → field 1 == 0
-fn compile_array_is_empty<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
-    let val = compile_expr(ctx, inner)?;
-    let sv = val.into_struct_value();
-    let len = ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into_int_value();
-    let zero = ctx.context.i64_type().const_zero();
-    let cmp = ctx.builder.build_int_compare(IntPredicate::EQ, len, zero, "is_empty").unwrap();
-    Some(cmp.into())
-}
-
-/// Compile `arr.push(item)` — mutates Array in-place via pointer.
-fn compile_array_push<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg], elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
-    let realloc = ctx.module.get_function("realloc")?;
-    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.context.i64_type();
-    let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
-
-    // Get pointer to Array struct
-    let array_ptr = compile_expr_addr(ctx, inner)?;
-
-    // Load current ptr, len, cap via GEP
-    let ptr_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 0, "ptr_field").unwrap();
-    let len_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 1, "len_field").unwrap();
-    let cap_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 2, "cap_field").unwrap();
-
-    let cur_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "cur_ptr").unwrap().into_pointer_value();
-    let cur_len = ctx.builder.build_load(i64_ty, len_field, "cur_len").unwrap().into_int_value();
-    let cur_cap = ctx.builder.build_load(i64_ty, cap_field, "cur_cap").unwrap().into_int_value();
-
-    // Compile the item to push
-    let item_val = compile_expr(ctx, &args[0].expr)?;
-
-    // new_len = cur_len + 1
-    let one = i64_ty.const_int(1, false);
-    let new_len = ctx.builder.build_int_add(cur_len, one, "new_len").unwrap();
-
-    // elem_size
-    let elem_size = elem_llvm_ty.size_of().unwrap();
-    let elem_size_i64 = ctx.builder.build_int_cast(elem_size, i64_ty, "elem_size").unwrap();
-
-    // if new_len > cur_cap → grow
-    let fn_val = ctx.builder.get_insert_block().unwrap().get_parent().unwrap();
-    let entry_bb = ctx.builder.get_insert_block().unwrap();
-    let grow_bb = ctx.context.append_basic_block(fn_val, "arr_push_grow");
-    let store_bb = ctx.context.append_basic_block(fn_val, "arr_push_store");
-
-    let needs_grow = ctx.builder.build_int_compare(IntPredicate::UGT, new_len, cur_cap, "needs_grow").unwrap();
-    ctx.builder.build_conditional_branch(needs_grow, grow_bb, store_bb).unwrap();
-
-    // grow block
-    ctx.builder.position_at_end(grow_bb);
-    // new_cap = max(new_len, cap * 2)
-    let cap_doubled = ctx.builder.build_int_mul(cur_cap, i64_ty.const_int(2, false), "cap_x2").unwrap();
-    let use_doubled = ctx.builder.build_int_compare(IntPredicate::UGT, cap_doubled, new_len, "use_doubled").unwrap();
-    let new_cap = ctx.builder.build_select(use_doubled, cap_doubled, new_len, "new_cap").unwrap().into_int_value();
-    // byte_size = new_cap * elem_size
-    let byte_size = ctx.builder.build_int_mul(new_cap, elem_size_i64, "byte_size").unwrap();
-    // realloc(ptr, byte_size)
-    let new_buf = ctx.builder.build_call(realloc, &[cur_ptr.into(), byte_size.into()], "new_buf").unwrap()
-        .try_as_basic_value().left().unwrap().into_pointer_value();
-    // store new ptr and cap
-    ctx.builder.build_store(ptr_field, new_buf).unwrap();
-    ctx.builder.build_store(cap_field, new_cap).unwrap();
-    ctx.builder.build_unconditional_branch(store_bb).unwrap();
-
-    // store block
-    ctx.builder.position_at_end(store_bb);
-    // Reload ptr after potential realloc (phi)
-    let phi_ptr = ctx.builder.build_phi(ptr_ty, "ptr_phi").unwrap();
-    phi_ptr.add_incoming(&[
-        (&cur_ptr, entry_bb),
-        (&new_buf, grow_bb),
-    ]);
-    let final_ptr = phi_ptr.as_basic_value().into_pointer_value();
-
-    // elem_ptr = GEP(ptr, [cur_len])
-    let elem_ptr = unsafe {
-        ctx.builder.build_in_bounds_gep(elem_llvm_ty, final_ptr, &[cur_len], "elem_ptr").unwrap()
-    };
-    // store item
-    ctx.builder.build_store(elem_ptr, item_val).unwrap();
-
-    // store new len
-    ctx.builder.build_store(len_field, new_len).unwrap();
-
-    None
-}
-
-/// Compile `arr.pop()` → remove and return last element.
-fn compile_array_pop<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
-    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.context.i64_type();
-    let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
-
-    // Get pointer to Array struct
-    let array_ptr = compile_expr_addr(ctx, inner)?;
-
-    let ptr_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 0, "ptr_field").unwrap();
-    let len_field = ctx.builder.build_struct_gep(array_ty, array_ptr, 1, "len_field").unwrap();
-
-    let cur_ptr = ctx.builder.build_load(ptr_ty, ptr_field, "cur_ptr").unwrap().into_pointer_value();
-    let cur_len = ctx.builder.build_load(i64_ty, len_field, "cur_len").unwrap().into_int_value();
-
-    // new_len = cur_len - 1
-    let one = i64_ty.const_int(1, false);
-    let new_len = ctx.builder.build_int_sub(cur_len, one, "new_len").unwrap();
-
-    // elem_ptr = GEP(ptr, [new_len])
-    let elem_ptr = unsafe {
-        ctx.builder.build_in_bounds_gep(elem_llvm_ty, cur_ptr, &[new_len], "pop_ptr").unwrap()
-    };
-    let elem_val = ctx.builder.build_load(elem_llvm_ty, elem_ptr, "pop_val").unwrap();
-
-    // store new_len
-    ctx.builder.build_store(len_field, new_len).unwrap();
-
-    Some(elem_val)
-}
-
-/// Compile `arr.first()` → load element at index 0.
-fn compile_array_first<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
-    let val = compile_expr(ctx, inner)?;
-    let sv = val.into_struct_value();
-    let ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr").unwrap().into_pointer_value();
-    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
-    let zero = ctx.context.i64_type().const_zero();
-    let elem_ptr = unsafe {
-        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[zero], "first_ptr").unwrap()
-    };
-    Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "first_val").unwrap())
-}
-
-/// Compile `arr.last()` → load element at index len-1.
-fn compile_array_last<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, elem_ty: &Ty) -> Option<BasicValueEnum<'ctx>> {
-    let val = compile_expr(ctx, inner)?;
-    let sv = val.into_struct_value();
-    let ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr").unwrap().into_pointer_value();
-    let len = ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into_int_value();
-    let elem_llvm_ty = ty_to_llvm(ctx, elem_ty);
-    let one = ctx.context.i64_type().const_int(1, false);
-    let last_idx = ctx.builder.build_int_sub(len, one, "last_idx").unwrap();
-    let elem_ptr = unsafe {
-        ctx.builder.build_in_bounds_gep(elem_llvm_ty, ptr, &[last_idx], "last_ptr").unwrap()
-    };
-    Some(ctx.builder.build_load(elem_llvm_ty, elem_ptr, "last_val").unwrap())
 }
 
 // ---------------------------------------------------------------------------

@@ -47,6 +47,7 @@ pub enum TokenKind {
     Assert,
     Test,
     Impl,
+    SizeOf,
 
     // --- Identifiers ---
     /// Value/function/variable identifier: [a-z_][a-z0-9_]*
@@ -164,6 +165,7 @@ impl TokenKind {
             "assert" => Some(TokenKind::Assert),
             "test" => Some(TokenKind::Test),
             "impl" => Some(TokenKind::Impl),
+            "sizeof" => Some(TokenKind::SizeOf),
             _ => None,
         }
     }

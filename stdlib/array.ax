@@ -1,11 +1,11 @@
 pub struct Array[T]
-    _ptr: i64
+    _ptr: Ptr[T]
     _len: i64
     _cap: i64
 
 impl[T] Array[T]
     fn new() -> Array[T]
-        let a: Array[T] = Array #{_ptr: 0, _len: 0, _cap: 0}
+        let a: Array[T] = Array #{_ptr: 0 as Ptr[T], _len: 0, _cap: 0}
         a
 
     fn len(self) -> i64
@@ -15,16 +15,78 @@ impl[T] Array[T]
         self._len == 0
 
     fn push(mut self, item: T)
-        {}
+        let new_len = self._len + 1
+        if new_len > self._cap
+            let mut new_cap = self._cap * 2
+            if new_len > new_cap
+                new_cap = new_len
+            let bytes = new_cap * sizeof[T]()
+            self._ptr = realloc(self._ptr as Ptr[{}], bytes) as Ptr[T]
+            self._cap = new_cap
+        self._ptr.offset(self._len).write(item)
+        self._len = new_len
 
     fn pop(mut self) -> T
-        {}
+        self._len = self._len - 1
+        self._ptr.offset(self._len).read()
 
     fn first(self) -> T
-        {}
+        self._ptr.read()
 
     fn last(self) -> T
-        {}
+        self._ptr.offset(self._len - 1).read()
+
+    fn clear(mut self)
+        self._len = 0
+
+    fn contains(self, item: T) -> bool
+        let mut i = 0
+        while i < self._len
+            if self._ptr.offset(i).read() == item
+                return true
+            i = i + 1
+        false
+
+    fn remove(mut self, index: i64) -> T
+        let val = self._ptr.offset(index).read()
+        let shift = self._len - index - 1
+        if shift > 0
+            let dst = self._ptr.offset(index) as Ptr[{}]
+            let src = self._ptr.offset(index + 1) as Ptr[{}]
+            memmove(dst, src, shift * sizeof[T]())
+        self._len = self._len - 1
+        val
+
+    fn insert(mut self, index: i64, item: T)
+        let new_len = self._len + 1
+        if new_len > self._cap
+            let mut new_cap = self._cap * 2
+            if new_len > new_cap
+                new_cap = new_len
+            let bytes = new_cap * sizeof[T]()
+            self._ptr = realloc(self._ptr as Ptr[{}], bytes) as Ptr[T]
+            self._cap = new_cap
+        let shift = self._len - index
+        if shift > 0
+            let src = self._ptr.offset(index) as Ptr[{}]
+            let dst = self._ptr.offset(index + 1) as Ptr[{}]
+            memmove(dst, src, shift * sizeof[T]())
+        self._ptr.offset(index).write(item)
+        self._len = new_len
+
+    fn reverse(mut self)
+        if self._len == 0
+            return
+        let mut left = 0
+        let mut right = self._len - 1
+        while left < right
+            let l = self._ptr.offset(left).read()
+            let r = self._ptr.offset(right).read()
+            self._ptr.offset(left).write(r)
+            self._ptr.offset(right).write(l)
+            left = left + 1
+            right = right - 1
 
     fn drop(mut self)
-        {}
+        if self._ptr.is_null() == false
+            free(self._ptr as Ptr[{}])

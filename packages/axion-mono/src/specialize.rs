@@ -29,19 +29,24 @@ pub fn specialize(
         enum FnOrMethod<'a> {
             Fn(&'a FnDef),
             Method(&'a MethodDef),
+            Constructor(&'a ConstructorDef),
         }
         let fn_or_method = source_file.items.iter().find_map(|item| {
             if item.span == fn_sym.span {
                 match &item.kind {
                     ItemKind::Function(f) => Some(FnOrMethod::Fn(f)),
                     ItemKind::Method(m) => Some(FnOrMethod::Method(m)),
+                    ItemKind::Constructor(c) => Some(FnOrMethod::Constructor(c)),
                     _ => None,
                 }
             } else {
                 None
             }
         });
-        let Some(fn_or_method) = fn_or_method else { continue };
+        let Some(fn_or_method) = fn_or_method else {
+
+            continue;
+        };
 
         // Find the function's type parameter DefIds by collecting Ty::Param
         // from the function's registered type. This handles impl-level type params
@@ -58,6 +63,7 @@ pub fn specialize(
         };
 
         if type_param_defs.len() != inst.type_args.len() {
+
             continue;
         }
 
@@ -89,6 +95,11 @@ pub fn specialize(
                 let base_name = format!("{}.{}", receiver_name, m.name);
                 let name = mangle_name(&base_name, &inst.type_args);
                 (name, m.body.clone(), m.params.clone(), m.return_type.clone(), true, Some(m.receiver_modifier.clone()))
+            }
+            FnOrMethod::Constructor(c) => {
+                let base_name = format!("{}.{}", c.type_name, c.name);
+                let name = mangle_name(&base_name, &inst.type_args);
+                (name, c.body.clone(), c.params.clone(), c.return_type.clone(), false, None)
             }
         };
 
@@ -133,6 +144,7 @@ pub fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
             ret: Box::new(substitute(ret, subst)),
         },
         Ty::Ref(inner) => Ty::Ref(Box::new(substitute(inner, subst))),
+        Ty::Ptr(inner) => Ty::Ptr(Box::new(substitute(inner, subst))),
         Ty::Slice(inner) => Ty::Slice(Box::new(substitute(inner, subst))),
         Ty::Array { elem, len } => Ty::Array {
             elem: Box::new(substitute(elem, subst)),
@@ -143,7 +155,7 @@ pub fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
 }
 
 /// Collect all Ty::Param DefIds from a type.
-fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
+pub fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
     match ty {
         Ty::Param(def_id) => {
             if !out.contains(def_id) {
@@ -166,7 +178,7 @@ fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
             }
             collect_param_def_ids(ret, out);
         }
-        Ty::Ref(inner) | Ty::Slice(inner) => {
+        Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Slice(inner) => {
             collect_param_def_ids(inner, out);
         }
         Ty::Array { elem, .. } => {
@@ -202,6 +214,7 @@ fn ty_to_suffix(ty: &Ty) -> String {
             format!("fn_{}_r_{}", p.join("_"), ty_to_suffix(ret))
         }
         Ty::Ref(inner) => format!("ref_{}", ty_to_suffix(inner)),
+        Ty::Ptr(inner) => format!("ptr_{}", ty_to_suffix(inner)),
         Ty::Array { elem, len } => format!("arr_{}_{}", len, ty_to_suffix(elem)),
         Ty::Param(def_id) => format!("p{}", def_id.0),
         _ => "unknown".to_string(),

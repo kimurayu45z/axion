@@ -9,6 +9,21 @@ use crate::expr::compile_expr;
 use crate::layout::{is_void_ty, ty_to_llvm, ty_to_llvm_metadata};
 use crate::stmt::compile_stmt;
 
+/// Check if a Ty contains any Ty::Param (i.e. is effectively generic).
+fn ty_contains_param(ty: &Ty) -> bool {
+    match ty {
+        Ty::Param(_) => true,
+        Ty::Fn { params, ret } => params.iter().any(ty_contains_param) || ty_contains_param(ret),
+        Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+            type_args.iter().any(ty_contains_param)
+        }
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_param),
+        Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Slice(inner) => ty_contains_param(inner),
+        Ty::Array { elem, .. } => ty_contains_param(elem),
+        _ => false,
+    }
+}
+
 /// Emit cleanup code: call drop methods on droppable locals, then free heap-allocated pointers.
 pub fn emit_cleanup<'ctx>(ctx: &CodegenCtx<'ctx>) {
     // Call drop methods in reverse order (LIFO).
@@ -52,6 +67,7 @@ pub fn declare_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>, source_file: &SourceF
         match &item.kind {
             ItemKind::Function(f) => declare_fn(ctx, f, item.span),
             ItemKind::Method(m) => declare_method(ctx, m, item.span),
+            ItemKind::Extern(ext) => declare_extern_block(ctx, ext),
             _ => {}
         }
     }
@@ -87,6 +103,43 @@ fn declare_fn<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span) {
 
     let fn_value = ctx.module.add_function(&f.name, fn_type, None);
     ctx.functions.insert(def_id, fn_value);
+}
+
+fn declare_extern_block<'ctx>(ctx: &mut CodegenCtx<'ctx>, ext: &ExternBlock) {
+    for decl in &ext.decls {
+        // Find the DefId for this extern function.
+        let def_id = ctx
+            .resolved
+            .symbols
+            .iter()
+            .find(|s| s.name == decl.name && s.kind == SymbolKind::ExternFn)
+            .map(|s| s.def_id);
+        let Some(def_id) = def_id else { continue };
+
+        // Get the function type from TypeEnv.
+        let fn_ty_info = ctx.type_env.defs.get(&def_id);
+        let Some(info) = fn_ty_info else { continue };
+        let Ty::Fn { params, ret } = &info.ty else { continue };
+
+        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
+            .iter()
+            .map(|t| ty_to_llvm_metadata(ctx, t))
+            .collect();
+
+        let fn_type = if is_void_ty(ret) {
+            ctx.context.void_type().fn_type(&param_types, false)
+        } else {
+            ty_to_llvm(ctx, ret).fn_type(&param_types, false)
+        };
+
+        // If already declared by intrinsics, just register the FunctionValue.
+        if let Some(fn_val) = ctx.module.get_function(&decl.name) {
+            ctx.functions.insert(def_id, fn_val);
+        } else {
+            let fn_val = ctx.module.add_function(&decl.name, fn_type, None);
+            ctx.functions.insert(def_id, fn_val);
+        }
+    }
 }
 
 /// Phase 3: Compile function and method bodies.
@@ -203,6 +256,11 @@ fn compile_fn_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, f: &FnDef, item_span: Span)
 }
 
 fn declare_method<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Span) {
+    // Skip generic methods — they will be compiled as monomorphized specializations.
+    if !m.type_params.is_empty() {
+        return;
+    }
+
     let def_id = ctx
         .resolved
         .symbols
@@ -215,6 +273,11 @@ fn declare_method<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Sp
     let Some(Ty::Fn { params, ret }) = fn_ty else {
         return;
     };
+
+    // Skip methods whose type contains Ty::Param (from impl block type params).
+    if params.iter().any(ty_contains_param) || ty_contains_param(ret) {
+        return;
+    }
 
     let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params
         .iter()
@@ -242,6 +305,11 @@ fn declare_method<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Sp
 }
 
 fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Span) {
+    // Skip generic methods — they will be compiled as monomorphized specializations.
+    if !m.type_params.is_empty() {
+        return;
+    }
+
     let def_id = ctx
         .resolved
         .symbols
@@ -249,6 +317,15 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
         .find(|s| s.span == item_span && s.kind == SymbolKind::Method)
         .map(|s| s.def_id);
     let Some(def_id) = def_id else { return };
+
+    // Also skip methods whose type contains Ty::Param (from impl block type params).
+    let fn_ty_info = ctx.type_env.defs.get(&def_id).map(|info| &info.ty);
+    if let Some(Ty::Fn { params, ret }) = fn_ty_info {
+        if params.iter().any(ty_contains_param) || ty_contains_param(ret) {
+            return;
+        }
+    }
+
     let Some(&fn_value) = ctx.functions.get(&def_id) else {
         return;
     };
@@ -335,44 +412,8 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
         }
     }
 
-    // String / Array intrinsic methods: skip normal body compilation.
+    // String / HashMap intrinsic methods: skip normal body compilation.
     let receiver_name_for_intrinsic = type_expr_name(&m.receiver_type);
-    if receiver_name_for_intrinsic == "Array" {
-        if m.name != "drop" {
-            if is_void_ty(&ret_ty) {
-                ctx.builder.build_return(None).unwrap();
-            } else {
-                let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
-                ctx.builder.build_return(Some(&dummy)).unwrap();
-            }
-            return;
-        }
-    }
-    if receiver_name_for_intrinsic == "Array" && m.name == "drop" {
-        if let Some(self_val) = fn_value.get_nth_param(0) {
-            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-            let i64_ty = ctx.context.i64_type();
-            let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            let self_ptr = self_val.into_pointer_value();
-            let buf_field = ctx.builder.build_struct_gep(array_ty, self_ptr, 0, "buf_field").unwrap();
-            let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
-
-            let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
-            let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
-            let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
-            ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
-
-            ctx.builder.position_at_end(free_bb);
-            if let Some(free_fn) = ctx.module.get_function("free") {
-                ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
-            }
-            ctx.builder.build_unconditional_branch(done_bb).unwrap();
-
-            ctx.builder.position_at_end(done_bb);
-            ctx.builder.build_return(None).unwrap();
-            return;
-        }
-    }
     if receiver_name_for_intrinsic == "HashMap" {
         if m.name == "drop" {
             if let Some(self_val) = fn_value.get_nth_param(0) {
@@ -561,6 +602,7 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         // Clear locals and heap allocations for this function.
         ctx.locals.clear();
         ctx.local_types.clear();
+        ctx.local_tys.clear();
         ctx.heap_allocs.clear();
         ctx.drop_locals.clear();
 
@@ -584,9 +626,13 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
                 });
                 if let Some(sym) = self_sym {
                     let pass_by_ref = matches!(receiver_modifier, Some(ReceiverModifier::Mut) | Some(ReceiverModifier::Borrow));
+                    let Ty::Fn { params: fn_params, .. } = fn_ty else { unreachable!() };
+                    // Store the semantic Ty for self so compile_call can resolve it.
+                    if !fn_params.is_empty() {
+                        ctx.local_tys.insert(sym.def_id, fn_params[0].clone());
+                    }
                     if pass_by_ref {
                         let ptr = self_val.into_pointer_value();
-                        let Ty::Fn { params: fn_params, .. } = fn_ty else { unreachable!() };
                         let pointee_ty = if !fn_params.is_empty() {
                             ty_to_llvm(ctx, &fn_params[0])
                         } else {
@@ -609,6 +655,11 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         };
 
         // Alloca params as local variables.
+        // Extract the parameter semantic types from fn_ty (already specialized).
+        let fn_param_tys: Vec<Ty> = match fn_ty {
+            Ty::Fn { params: fn_params, .. } => fn_params.clone(),
+            _ => vec![],
+        };
         for (i, param) in params.iter().enumerate() {
             let param_sym = ctx
                 .resolved
@@ -627,6 +678,11 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
                     ctx.builder.build_store(alloca, param_val).unwrap();
                     ctx.locals.insert(sym.def_id, alloca);
                     ctx.local_types.insert(sym.def_id, val_ty);
+                    // Store semantic Ty for param so compile_call can resolve receiver types.
+                    let semantic_idx = (i as u32 + param_offset) as usize;
+                    if let Some(param_ty) = fn_param_tys.get(semantic_idx) {
+                        ctx.local_tys.insert(sym.def_id, param_ty.clone());
+                    }
                 }
             }
         }
@@ -643,44 +699,6 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
                         emit_hashmap_drop(ctx, fn_value, self_val.into_pointer_value());
                     }
                 } else {
-                    if is_void_ty(&ret_ty) {
-                        ctx.builder.build_return(None).unwrap();
-                    } else {
-                        let dummy = ty_to_llvm(ctx, &ret_ty).const_zero();
-                        ctx.builder.build_return(Some(&dummy)).unwrap();
-                    }
-                }
-                ctx.current_subst.clear();
-                continue;
-            }
-            if name.starts_with("Array.") {
-                let method_name = &name["Array.".len()..];
-                if method_name == "drop" {
-                    // emit Array.drop intrinsic body (free ptr if non-null)
-                    if let Some(self_val) = fn_value.get_nth_param(0) {
-                        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
-                        let i64_ty = ctx.context.i64_type();
-                        let array_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-                        let self_ptr = self_val.into_pointer_value();
-                        let buf_field = ctx.builder.build_struct_gep(array_ty, self_ptr, 0, "buf_field").unwrap();
-                        let buf = ctx.builder.build_load(ptr_ty, buf_field, "buf").unwrap().into_pointer_value();
-
-                        let is_null = ctx.builder.build_is_null(buf, "is_null").unwrap();
-                        let free_bb = ctx.context.append_basic_block(fn_value, "free_buf");
-                        let done_bb = ctx.context.append_basic_block(fn_value, "drop_done");
-                        ctx.builder.build_conditional_branch(is_null, done_bb, free_bb).unwrap();
-
-                        ctx.builder.position_at_end(free_bb);
-                        if let Some(free_fn) = ctx.module.get_function("free") {
-                            ctx.builder.build_call(free_fn, &[buf.into()], "").unwrap();
-                        }
-                        ctx.builder.build_unconditional_branch(done_bb).unwrap();
-
-                        ctx.builder.position_at_end(done_bb);
-                        ctx.builder.build_return(None).unwrap();
-                    }
-                } else {
-                    // emit trivial return
                     if is_void_ty(&ret_ty) {
                         ctx.builder.build_return(None).unwrap();
                     } else {
@@ -729,7 +747,16 @@ pub fn compile_specialized_functions<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
             emit_cleanup(ctx);
             if is_void_ty(&ret_ty) {
                 ctx.builder.build_return(None).unwrap();
-            } else if let Some(val) = last_val {
+            } else if let Some(mut val) = last_val {
+                // Cast i1 → i8 for bool returns.
+                let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);
+                if val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1
+                    && ret_llvm_ty.is_int_type() && ret_llvm_ty.into_int_type().get_bit_width() == 8
+                {
+                    val = ctx.builder.build_int_z_extend(
+                        val.into_int_value(), ctx.context.i8_type(), "bool_ext"
+                    ).unwrap().into();
+                }
                 ctx.builder.build_return(Some(&val)).unwrap();
             } else {
                 let ret_llvm_ty = ty_to_llvm(ctx, &ret_ty);

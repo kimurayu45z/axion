@@ -88,6 +88,20 @@ pub fn declare_intrinsics<'ctx>(ctx: &mut CodegenCtx<'ctx>) {
         false,
     );
     ctx.module.add_function("memcmp", memcmp_ty, None);
+
+    // void *memmove(void *dest, const void *src, size_t n)
+    let memmove_ty = ctx
+        .context
+        .ptr_type(AddressSpace::default())
+        .fn_type(
+            &[
+                ctx.context.ptr_type(AddressSpace::default()).into(),
+                ctx.context.ptr_type(AddressSpace::default()).into(),
+                ctx.context.i64_type().into(),
+            ],
+            false,
+        );
+    ctx.module.add_function("memmove", memmove_ty, None);
 }
 
 /// Get the printf function.

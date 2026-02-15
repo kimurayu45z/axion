@@ -1,4 +1,5 @@
 /// The Axion prelude sources, loaded from stdlib/ at compile time.
+pub const PRELUDE_FFI: &str = include_str!("../../../stdlib/ffi.ax");
 pub const PRELUDE_NUMBER: &str = include_str!("../../../stdlib/number.ax");
 pub const PRELUDE_OPTION: &str = include_str!("../../../stdlib/option.ax");
 pub const PRELUDE_RESULT: &str = include_str!("../../../stdlib/result.ax");
@@ -31,6 +32,7 @@ pub fn prelude_source() -> String {
 /// stdlib file occupies which byte range in the combined source.
 pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
     let files: &[(&str, &str)] = &[
+        ("ffi", PRELUDE_FFI),
         ("number", PRELUDE_NUMBER),
         ("option", PRELUDE_OPTION),
         ("result", PRELUDE_RESULT),
@@ -66,10 +68,11 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
 /// Returns (combined_source, prelude_line_count).
 pub fn with_prelude(user_source: &str) -> (String, usize) {
     let combined = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT, PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING, PRELUDE_ARRAY, PRELUDE_HASHMAP, user_source
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT, PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING, PRELUDE_ARRAY, PRELUDE_HASHMAP, user_source
     );
-    let prelude_lines = PRELUDE_NUMBER.lines().count()
+    let prelude_lines = PRELUDE_FFI.lines().count()
+        + PRELUDE_NUMBER.lines().count()
         + PRELUDE_OPTION.lines().count()
         + PRELUDE_RESULT.lines().count()
         + PRELUDE_ITER.lines().count()
@@ -78,6 +81,6 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
         + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
         + PRELUDE_HASHMAP.lines().count()
-        + 9;
+        + 10;
     (combined, prelude_lines)
 }

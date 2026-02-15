@@ -53,7 +53,10 @@ fn compile_let<'ctx>(ctx: &mut CodegenCtx<'ctx>, stmt: &Stmt, name: &str, value:
         .find(|s| s.kind == SymbolKind::LocalVar && s.span == stmt.span)
         .map(|s| s.def_id);
 
-    let Some(def_id) = def_id else { return };
+    let Some(def_id) = def_id else {
+
+        return;
+    };
 
     if let Some(val) = val {
         let val_ty = val.get_type();
@@ -77,10 +80,11 @@ fn compile_let<'ctx>(ctx: &mut CodegenCtx<'ctx>, stmt: &Stmt, name: &str, value:
         } else {
             axion_mono::specialize::substitute(&expr_ty, &ctx.current_subst)
         };
-        ctx.local_tys.insert(def_id, semantic_ty);
+
+        ctx.local_tys.insert(def_id, semantic_ty.clone());
 
         // Check if the value's type has a `drop` method; if so, register for cleanup.
-        register_drop_if_needed(ctx, alloca, val_ty, &expr_ty);
+        register_drop_if_needed(ctx, alloca, val_ty, &semantic_ty);
     }
 }
 
@@ -112,8 +116,26 @@ fn register_drop_if_needed<'ctx>(
         .map(|s| s.def_id);
     let Some(drop_def_id) = drop_def_id else { return };
 
+    // First try the regular functions table.
     if let Some(&drop_fn) = ctx.functions.get(&drop_def_id) {
         ctx.drop_locals.push((alloca, llvm_ty, drop_fn));
+        return;
+    }
+
+    // For generic types (e.g. Array[T]), the drop method is monomorphized.
+    // Look up via mono_output using the type's type_args.
+    let type_args = match ty {
+        Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => type_args.clone(),
+        _ => vec![],
+    };
+    if !type_args.is_empty() {
+        if let Some(mono) = ctx.mono_output {
+            if let Some(mangled) = mono.lookup(drop_def_id, &type_args) {
+                if let Some(&drop_fn) = ctx.mono_fn_values.get(mangled) {
+                    ctx.drop_locals.push((alloca, llvm_ty, drop_fn));
+                }
+            }
+        }
     }
 }
 

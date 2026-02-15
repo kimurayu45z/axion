@@ -1729,6 +1729,226 @@ fn main()
 }
 
 #[test]
+fn compile_array_clear() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(1)
+    a.push(2)
+    a.push(3)
+    a.clear()
+    a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_array_clear_then_push() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.clear()
+    a.push(42)
+    a.first()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_array_contains_found() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    if a.contains(20)
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn compile_array_contains_not_found() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    if a.contains(99)
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_array_contains_empty() {
+    let src = "\
+fn main() -> i64
+    let a = Array[i64].new()
+    if a.contains(1)
+        1
+    else
+        0
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn compile_array_remove_middle() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    let removed = a.remove(1)
+    removed + a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 22); // 20 + 2
+}
+
+#[test]
+fn compile_array_remove_first() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    a.remove(0)
+    a.first()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_array_remove_last() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    let v = a.remove(2)
+    v + a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 32); // 30 + 2
+}
+
+#[test]
+fn compile_array_insert_beginning() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(20)
+    a.push(30)
+    a.insert(0, 10)
+    a.first() + a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 13); // 10 + 3
+}
+
+#[test]
+fn compile_array_insert_middle() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(30)
+    a.insert(1, 20)
+    a[1]
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 20);
+}
+
+#[test]
+fn compile_array_insert_end() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.insert(2, 30)
+    a.last()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 30);
+}
+
+#[test]
+fn compile_array_reverse_basic() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(1)
+    a.push(2)
+    a.push(3)
+    a.reverse()
+    a.first()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 3);
+}
+
+#[test]
+fn compile_array_reverse_check_all() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    a.reverse()
+    a[0] + a[1] + a[2]
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 60); // 30+20+10 = 60
+}
+
+#[test]
+fn compile_array_reverse_single() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.push(42)
+    a.reverse()
+    a.first()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn compile_array_reverse_empty() {
+    let src = "\
+fn main() -> i64
+    let mut a = Array[i64].new()
+    a.reverse()
+    a.len()
+";
+    let result = compile_and_run_with_prelude(src);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
 fn compile_string_concat_basic() {
     let src = "\
 fn main() -> i64

@@ -1316,6 +1316,17 @@ impl Parser {
                     kind: ExprKind::Try(Box::new(expr)),
                     span,
                 };
+            } else if self.check(&TokenKind::As) {
+                self.advance();
+                let target = self.parse_type_expr()?;
+                let span = expr.span.merge(self.prev_span());
+                expr = Expr {
+                    kind: ExprKind::Cast {
+                        expr: Box::new(expr),
+                        target,
+                    },
+                    span,
+                };
             } else {
                 break;
             }
@@ -1559,6 +1570,18 @@ impl Parser {
                 };
                 Some(Expr {
                     kind: ExprKind::Assert { cond: Box::new(cond), message },
+                    span: span.merge(self.prev_span()),
+                })
+            }
+            Some(TokenKind::SizeOf) => {
+                self.advance();
+                self.expect(&TokenKind::LBracket)?;
+                let ty = self.parse_type_expr()?;
+                self.expect(&TokenKind::RBracket)?;
+                self.expect(&TokenKind::LParen)?;
+                self.expect(&TokenKind::RParen)?;
+                Some(Expr {
+                    kind: ExprKind::SizeOf(ty),
                     span: span.merge(self.prev_span()),
                 })
             }

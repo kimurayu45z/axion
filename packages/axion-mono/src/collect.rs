@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axion_resolve::def_id::{DefId, SymbolKind};
 use axion_resolve::ResolveOutput;
 use axion_syntax::*;
@@ -40,7 +42,55 @@ pub fn collect_instantiations(
         }
     }
 
+    // Auto-collect `drop` method specializations for any generic type whose
+    // methods were instantiated, since `drop` is called implicitly at cleanup.
+    collect_implicit_drop(&mut result, &mut seen, resolved);
+
     result
+}
+
+/// For every method instantiation on a generic type, ensure the type's `drop`
+/// method (if any) is also collected with the same type_args.
+fn collect_implicit_drop(
+    result: &mut Vec<Instantiation>,
+    seen: &mut HashSet<SpecKey>,
+    resolved: &ResolveOutput,
+) {
+    // Gather (type_name, type_args) pairs from existing instantiations.
+    let mut type_instances: Vec<(String, Vec<Ty>)> = Vec::new();
+    for inst in result.iter() {
+        let sym = resolved.symbols.iter().find(|s| s.def_id == inst.fn_def_id);
+        if let Some(sym) = sym {
+            if matches!(sym.kind, SymbolKind::Method | SymbolKind::Constructor) {
+                // Method name is "TypeName.method_name" — extract the type name.
+                if let Some(dot_pos) = sym.name.find('.') {
+                    let type_name = &sym.name[..dot_pos];
+                    type_instances.push((type_name.to_string(), inst.type_args.clone()));
+                }
+            }
+        }
+    }
+
+    // For each type instance, check if a drop method exists and collect it.
+    for (type_name, type_args) in &type_instances {
+        let drop_key = format!("{}.drop", type_name);
+        let drop_sym = resolved.symbols.iter().find(|s| {
+            s.name == drop_key && s.kind == SymbolKind::Method
+        });
+        if let Some(drop_sym) = drop_sym {
+            let key = SpecKey {
+                fn_def_id: drop_sym.def_id,
+                type_args: type_args.clone(),
+            };
+            if !seen.contains(&key) {
+                seen.insert(key);
+                result.push(Instantiation {
+                    fn_def_id: drop_sym.def_id,
+                    type_args: type_args.clone(),
+                });
+            }
+        }
+    }
 }
 
 fn collect_from_stmts(
@@ -168,7 +218,11 @@ fn collect_from_expr(
             };
             // Check for method calls on generic receiver types.
             if let Some((inner, method_name)) = field_info {
-                if let Some(inner_ty) = type_check.expr_types.get(&inner.span.start) {
+                // Use method_receiver_types (which avoids span collision) first,
+                // fall back to expr_types.
+                let receiver_ty = type_check.method_receiver_types.get(&expr.span.start)
+                    .or_else(|| type_check.expr_types.get(&inner.span.start));
+                if let Some(inner_ty) = receiver_ty {
                     let type_args = match inner_ty {
                         Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => type_args.clone(),
                         _ => vec![],
@@ -189,18 +243,30 @@ fn collect_from_expr(
                                     && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
                             });
                             if let Some(method_sym) = method_sym {
-                                // The receiver has non-empty type_args, so the method
-                                // needs monomorphization regardless of whether the method
-                                // itself has additional type params.
+                                // Combine receiver type_args with method-level turbofish args.
+                                let mut combined_args = type_args.clone();
+                                if let ExprKind::TypeApp { type_args: turbo_args, .. } = &func.kind {
+                                    for ta in turbo_args {
+                                        let ta_span = type_expr_span(ta);
+                                        let concrete = type_check
+                                            .expr_types
+                                            .get(&ta_span.start)
+                                            .cloned()
+                                            .unwrap_or_else(|| lower_type_arg(ta, resolved));
+                                        combined_args.push(concrete);
+                                    }
+                                }
+
                                 let key = SpecKey {
                                     fn_def_id: method_sym.def_id,
-                                    type_args: type_args.clone(),
+                                    type_args: combined_args.clone(),
                                 };
+
                                 if !seen.contains(&key) {
                                     seen.insert(key);
                                     result.push(Instantiation {
                                         fn_def_id: method_sym.def_id,
-                                        type_args,
+                                        type_args: combined_args,
                                     });
                                 }
                             }

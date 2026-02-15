@@ -1,0 +1,13 @@
+// FixedArray [T; N] built-in methods (LSP/IDE stub)
+//
+// [T; N] is a language built-in type. These methods are implemented
+// as codegen intrinsics and cannot be overridden.
+//
+// fn len(self) -> i64
+//     Returns the number of elements in the array (compile-time constant N).
+//
+// fn first(self) -> T
+//     Returns the first element (index 0).
+//
+// fn last(self) -> T
+//     Returns the last element (index N-1).

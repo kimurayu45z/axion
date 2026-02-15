@@ -25,6 +25,10 @@ pub struct TypeCheckOutput {
     pub expr_types: HashMap<u32, Ty>,
     /// Field access resolutions: span.start → field index.
     pub field_resolutions: HashMap<u32, usize>,
+    /// Method call receiver types: call span.start → receiver Ty.
+    /// Stored separately because span collisions between receiver, field, and call
+    /// cause expr_types to overwrite the receiver type.
+    pub method_receiver_types: HashMap<u32, Ty>,
 }
 
 /// External type information to inject before type checking (for cross-module imports).
@@ -57,6 +61,7 @@ pub fn type_check_with_imports(
     let mut unify = UnifyContext::new();
     let mut expr_types = HashMap::new();
     let mut field_resolutions = HashMap::new();
+    let mut method_receiver_types = HashMap::new();
 
     // Phase 1: Build type environment from all top-level definitions.
     let mut env = TypeEnv::build(source_file, resolved, &mut unify);
@@ -106,6 +111,8 @@ pub fn type_check_with_imports(
                     current_effects,
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
+                    method_receiver_types: &mut method_receiver_types,
+                    last_field_receiver_ty: None,
                 };
                 let body_ty = ctx.infer_block_ty(&f.body);
 
@@ -173,6 +180,8 @@ pub fn type_check_with_imports(
                     current_effects,
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
+                    method_receiver_types: &mut method_receiver_types,
+                    last_field_receiver_ty: None,
                 };
                 let body_ty = ctx.infer_block_ty(&m.body);
 
@@ -236,6 +245,8 @@ pub fn type_check_with_imports(
                     current_effects: Vec::new(),
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
+                    method_receiver_types: &mut method_receiver_types,
+                    last_field_receiver_ty: None,
                 };
                 let body_ty = ctx.infer_block_ty(&c.body);
 
@@ -268,6 +279,8 @@ pub fn type_check_with_imports(
                     current_effects: Vec::new(),
                     handled_effects: Vec::new(),
                     int_lit_vars: Vec::new(),
+                    method_receiver_types: &mut method_receiver_types,
+                    last_field_receiver_ty: None,
                 };
                 ctx.infer_stmts(&t.body);
                 ctx.default_int_lits();
@@ -373,9 +386,16 @@ pub fn type_check_with_imports(
         .map(|(k, v)| (k, unify.resolve(&v)))
         .collect();
 
+    // Also resolve receiver types.
+    let resolved_receiver_types: HashMap<u32, Ty> = method_receiver_types
+        .into_iter()
+        .map(|(k, v)| (k, unify.resolve(&v)))
+        .collect();
+
     let output = TypeCheckOutput {
         expr_types: resolved_expr_types,
         field_resolutions,
+        method_receiver_types: resolved_receiver_types,
     };
     (output, diagnostics)
 }

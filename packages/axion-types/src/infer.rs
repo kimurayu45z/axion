@@ -33,6 +33,10 @@ pub(crate) struct InferCtx<'a> {
     pub handled_effects: Vec<String>,
     /// Infer vars created for unsuffixed integer literals (for defaulting unresolved ones to i64).
     pub int_lit_vars: Vec<crate::ty::InferVar>,
+    /// Method call receiver types: call span.start → receiver Ty.
+    pub method_receiver_types: &'a mut HashMap<u32, Ty>,
+    /// Temporary: receiver type from the last infer_field call.
+    pub last_field_receiver_ty: Option<Ty>,
 }
 
 impl<'a> InferCtx<'a> {
@@ -147,6 +151,11 @@ impl<'a> InferCtx<'a> {
                 }
                 Ty::Error // Set type deferred
             }
+            ExprKind::Cast { expr: inner, target } => {
+                self.infer_expr(inner);
+                lower_type_expr(target, &self.resolved.symbols, &self.resolved.resolutions)
+            }
+            ExprKind::SizeOf(_) => Ty::Prim(PrimTy::I64),
         }
     }
 
@@ -276,8 +285,16 @@ impl<'a> InferCtx<'a> {
     }
 
     fn infer_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Ty {
+        self.last_field_receiver_ty = None;
         let func_ty = self.infer_expr(func);
         let resolved_func = self.unify.resolve(&func_ty);
+
+        // If the func was a field access (method call), capture the receiver type.
+        if matches!(&func.kind, ExprKind::Field { .. }) {
+            if let Some(receiver_ty) = self.last_field_receiver_ty.take() {
+                self.method_receiver_types.insert(span.start, receiver_ty);
+            }
+        }
 
         match &resolved_func {
             Ty::Fn { params, ret } => {
@@ -350,6 +367,9 @@ impl<'a> InferCtx<'a> {
         let inner_ty = self.infer_expr(inner);
         let resolved = self.unify.resolve(&inner_ty);
 
+        // Save the resolved receiver type so infer_call can capture it.
+        self.last_field_receiver_ty = Some(resolved.clone());
+
         // FixedArray built-in methods
         if let Ty::Array { ref elem, len: _ } = resolved {
             match name {
@@ -375,6 +395,18 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Ptr[T] built-in methods
+        if let Ty::Ptr(ref inner) = resolved {
+            match name {
+                "read" => return Ty::Fn { params: vec![], ret: Box::new(*inner.clone()) },
+                "write" => return Ty::Fn { params: vec![*inner.clone()], ret: Box::new(Ty::Unit) },
+                "offset" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Ptr(inner.clone())) },
+                "is_null" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
+                "null" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Ptr(inner.clone())) },
+                _ => {}
+            }
+        }
+
         // Array[T] built-in methods
         if self.is_array_struct(&resolved) {
             if let Ty::Struct { type_args, .. } = &resolved {
@@ -386,6 +418,11 @@ impl<'a> InferCtx<'a> {
                     "pop" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
                     "first" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
                     "last" => return Ty::Fn { params: vec![], ret: Box::new(elem.clone()) },
+                    "clear" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Unit) },
+                    "contains" => return Ty::Fn { params: vec![elem.clone()], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
+                    "remove" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64)], ret: Box::new(elem.clone()) },
+                    "insert" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64), elem.clone()], ret: Box::new(Ty::Unit) },
+                    "reverse" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Unit) },
                     _ => {}
                 }
             }
@@ -2150,7 +2187,7 @@ fn collect_param_def_ids(ty: &Ty, out: &mut Vec<DefId>) {
             }
             collect_param_def_ids(ret, out);
         }
-        Ty::Ref(inner) | Ty::Slice(inner) => {
+        Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Slice(inner) => {
             collect_param_def_ids(inner, out);
         }
         Ty::Array { elem, .. } => {
@@ -2177,6 +2214,7 @@ fn substitute(ty: &Ty, subst: &HashMap<DefId, Ty>) -> Ty {
             ret: Box::new(substitute(ret, subst)),
         },
         Ty::Ref(inner) => Ty::Ref(Box::new(substitute(inner, subst))),
+        Ty::Ptr(inner) => Ty::Ptr(Box::new(substitute(inner, subst))),
         Ty::Slice(inner) => Ty::Slice(Box::new(substitute(inner, subst))),
         Ty::Array { elem, len } => Ty::Array {
             elem: Box::new(substitute(elem, subst)),

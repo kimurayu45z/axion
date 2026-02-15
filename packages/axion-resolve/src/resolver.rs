@@ -269,37 +269,60 @@ fn register_type_params(ctx: &mut ResolveContext, params: &[TypeParam], scope: S
     for tp in params {
         match tp {
             TypeParam::Type { name, bounds, span } => {
-                let def_id = ctx.alloc_symbol(
-                    name.clone(),
-                    SymbolKind::TypeParam,
-                    Visibility::Private,
-                    *span,
-                    None,
-                );
+                // Reuse an existing TypeParam symbol with the same span to ensure
+                // all methods in the same impl block share the same type param DefId.
+                let existing = ctx.symbols.iter().find(|s| {
+                    s.kind == SymbolKind::TypeParam && s.span == *span
+                });
+                let def_id = if let Some(sym) = existing {
+                    sym.def_id
+                } else {
+                    ctx.alloc_symbol(
+                        name.clone(),
+                        SymbolKind::TypeParam,
+                        Visibility::Private,
+                        *span,
+                        None,
+                    )
+                };
                 ctx.scope_tree.insert_type(scope, name.clone(), def_id);
                 for bound in bounds {
                     resolve_interface_bound(ctx, bound, scope);
                 }
             }
             TypeParam::Const { name, ty, span } => {
-                let def_id = ctx.alloc_symbol(
-                    name.clone(),
-                    SymbolKind::ConstParam,
-                    Visibility::Private,
-                    *span,
-                    None,
-                );
+                let existing = ctx.symbols.iter().find(|s| {
+                    s.kind == SymbolKind::ConstParam && s.span == *span
+                });
+                let def_id = if let Some(sym) = existing {
+                    sym.def_id
+                } else {
+                    ctx.alloc_symbol(
+                        name.clone(),
+                        SymbolKind::ConstParam,
+                        Visibility::Private,
+                        *span,
+                        None,
+                    )
+                };
                 ctx.scope_tree.insert_value(scope, name.clone(), def_id);
                 resolve_type_expr(ctx, ty, scope);
             }
             TypeParam::Dim { name, span } => {
-                let def_id = ctx.alloc_symbol(
-                    name.clone(),
-                    SymbolKind::DimParam,
-                    Visibility::Private,
-                    *span,
-                    None,
-                );
+                let existing = ctx.symbols.iter().find(|s| {
+                    s.kind == SymbolKind::DimParam && s.span == *span
+                });
+                let def_id = if let Some(sym) = existing {
+                    sym.def_id
+                } else {
+                    ctx.alloc_symbol(
+                        name.clone(),
+                        SymbolKind::DimParam,
+                        Visibility::Private,
+                        *span,
+                        None,
+                    )
+                };
                 ctx.scope_tree.insert_type(scope, name.clone(), def_id);
             }
         }
@@ -601,6 +624,15 @@ fn resolve_expr(ctx: &mut ResolveContext, expr: &Expr, scope: ScopeId) {
             resolve_expr(ctx, inner, scope);
             resolve_expr(ctx, index, scope);
         }
+
+        ExprKind::Cast { expr: inner, target } => {
+            resolve_expr(ctx, inner, scope);
+            resolve_type_expr(ctx, target, scope);
+        }
+
+        ExprKind::SizeOf(ty) => {
+            resolve_type_expr(ctx, ty, scope);
+        }
     }
 }
 
@@ -611,16 +643,19 @@ fn resolve_expr(ctx: &mut ResolveContext, expr: &Expr, scope: ScopeId) {
 fn resolve_type_expr(ctx: &mut ResolveContext, ty: &TypeExpr, scope: ScopeId) {
     match ty {
         TypeExpr::Named { name, args, span } => {
-            if let Some(def_id) = ctx.scope_tree.lookup_type(scope, name) {
-                ctx.record_resolution(span.start, def_id);
-                ctx.mark_used(def_id);
-            } else {
-                ctx.diagnostics.push(errors::undefined_type(
-                    name,
-                    &ctx.file_name,
-                    *span,
-                    &ctx.source,
-                ));
+            // Ptr is a built-in parameterized type, no symbol lookup needed.
+            if name != "Ptr" {
+                if let Some(def_id) = ctx.scope_tree.lookup_type(scope, name) {
+                    ctx.record_resolution(span.start, def_id);
+                    ctx.mark_used(def_id);
+                } else {
+                    ctx.diagnostics.push(errors::undefined_type(
+                        name,
+                        &ctx.file_name,
+                        *span,
+                        &ctx.source,
+                    ));
+                }
             }
             for arg in args {
                 resolve_type_expr(ctx, arg, scope);

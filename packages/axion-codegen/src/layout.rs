@@ -81,6 +81,11 @@ pub fn ty_to_llvm<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> BasicTypeEnum<'ctx> 
             let elem_llvm = ty_to_llvm(ctx, elem);
             elem_llvm.array_type(*len as u32).into()
         }
+        Ty::Ptr(_) => {
+            ctx.context
+                .ptr_type(AddressSpace::default())
+                .into()
+        }
         Ty::Param(_) | Ty::Infer(_) | Ty::Error => {
             // Fallback: i64
             ctx.context.i64_type().into()

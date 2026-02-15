@@ -23,6 +23,8 @@ pub enum Ty {
     Slice(Box<Ty>),
     /// Fixed-size array type: `[i64; 3]`
     Array { elem: Box<Ty>, len: u64 },
+    /// Raw pointer type: `Ptr[T]`
+    Ptr(Box<Ty>),
     /// Type parameter (generic): `T` — indexed by DefId
     Param(DefId),
     /// Inference variable (unresolved) — filled by unification
@@ -125,6 +127,19 @@ impl PrimTy {
                 | PrimTy::Usize
         )
     }
+
+    /// Whether this primitive is a floating-point type.
+    pub fn is_float(self) -> bool {
+        matches!(self, PrimTy::F16 | PrimTy::F32 | PrimTy::F64 | PrimTy::Bf16)
+    }
+
+    /// Whether this primitive is a signed integer type.
+    pub fn is_signed(self) -> bool {
+        matches!(
+            self,
+            PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128
+        )
+    }
 }
 
 impl fmt::Display for PrimTy {
@@ -210,6 +225,7 @@ impl fmt::Display for Ty {
             Ty::Ref(inner) => write!(f, "&{inner}"),
             Ty::Slice(inner) => write!(f, "&[{inner}]"),
             Ty::Array { elem, len } => write!(f, "[{elem}; {len}]"),
+            Ty::Ptr(inner) => write!(f, "Ptr[{inner}]"),
             Ty::Param(def_id) => write!(f, "Param({})", def_id.0),
             Ty::Infer(v) => write!(f, "?{}", v.0),
             Ty::Error => write!(f, "<error>"),

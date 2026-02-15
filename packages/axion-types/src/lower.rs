@@ -13,6 +13,15 @@ pub(crate) fn lower_type_expr(
 ) -> Ty {
     match te {
         TypeExpr::Named { name, args, span } => {
+            // Built-in parameterized type: Ptr[T]
+            if name == "Ptr" {
+                let inner = args
+                    .first()
+                    .map(|a| lower_type_expr(a, symbols, resolutions))
+                    .unwrap_or(Ty::Unit);
+                return Ty::Ptr(Box::new(inner));
+            }
+
             // Check if it's a primitive type.
             if let Some(prim) = PrimTy::from_name(name) {
                 return Ty::Prim(prim);
