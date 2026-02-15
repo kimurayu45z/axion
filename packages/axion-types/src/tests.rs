@@ -1208,7 +1208,7 @@ fn array_methods_no_effect_needed() {
 #[test]
 fn string_methods_no_effect_needed() {
     check_no_errors_with_prelude(
-        "fn main() -> i64\n    let s = String.new()\n    s.len()"
+        "fn main() -> usize\n    let s = String.new()\n    s.len()"
     );
 }
 

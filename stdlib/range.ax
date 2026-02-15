@@ -11,4 +11,34 @@ impl Range[i64]
         else
             Option[i64].None
 
-impl Iter for Range
+impl Range[i32]
+    fn next(mut self) -> Option[i32]
+        if self.start < self.end
+            let v = self.start
+            self.start = self.start + 1
+            Option[i32].Some(v)
+        else
+            Option[i32].None
+
+impl Range[usize]
+    fn next(mut self) -> Option[usize]
+        if self.start < self.end
+            let v = self.start
+            self.start = self.start + 1
+            Option[usize].Some(v)
+        else
+            Option[usize].None
+
+impl Range[isize]
+    fn next(mut self) -> Option[isize]
+        if self.start < self.end
+            let v = self.start
+            self.start = self.start + 1
+            Option[isize].Some(v)
+        else
+            Option[isize].None
+
+impl Iter for Range[i64]
+impl Iter for Range[i32]
+impl Iter for Range[usize]
+impl Iter for Range[isize]

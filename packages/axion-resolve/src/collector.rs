@@ -140,8 +140,10 @@ fn collect_item(ctx: &mut ResolveContext, item: &Item, root: ScopeId) {
 
         ItemKind::Method(m) => {
             // Methods are registered as `ReceiverType.name` in the value NS.
-            let receiver_name = type_expr_name(&m.receiver_type);
-            let key = format!("{receiver_name}.{}", m.name);
+            // For specialized impls (no impl type_params, concrete receiver type args),
+            // use qualified key like "Range[i64].next" to avoid collisions.
+            let receiver_key = method_receiver_key(m);
+            let key = format!("{receiver_key}.{}", m.name);
             let def_id = ctx.alloc_symbol(
                 key.clone(),
                 SymbolKind::Method,
@@ -196,6 +198,35 @@ fn collect_item(ctx: &mut ResolveContext, item: &Item, root: ScopeId) {
 /// Extract the simple name from a type expression (for method receiver keys).
 fn type_expr_name(ty: &TypeExpr) -> String {
     match ty {
+        TypeExpr::Named { name, .. } => name.clone(),
+        _ => "<unknown>".to_string(),
+    }
+}
+
+/// Build the receiver key for a method.
+/// For specialized impls (no type_params but receiver has concrete type args),
+/// returns a qualified key like "Range[i64]".
+/// For generic impls (has type_params), returns just the base name like "Array".
+fn method_receiver_key(m: &MethodDef) -> String {
+    let base_name = type_expr_name(&m.receiver_type);
+    if m.type_params.is_empty() {
+        if let TypeExpr::Named { args, .. } = &m.receiver_type {
+            if !args.is_empty() {
+                let arg_strs: Vec<String> = args.iter().map(type_expr_to_string).collect();
+                return format!("{}[{}]", base_name, arg_strs.join(", "));
+            }
+        }
+    }
+    base_name
+}
+
+/// Convert a TypeExpr to its string representation for use in method keys.
+fn type_expr_to_string(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named { name, args, .. } if !args.is_empty() => {
+            let arg_strs: Vec<String> = args.iter().map(type_expr_to_string).collect();
+            format!("{}[{}]", name, arg_strs.join(", "))
+        }
         TypeExpr::Named { name, .. } => name.clone(),
         _ => "<unknown>".to_string(),
     }

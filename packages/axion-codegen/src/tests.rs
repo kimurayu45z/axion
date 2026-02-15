@@ -1518,7 +1518,7 @@ fn main() -> i64
 #[test]
 fn compile_string_new() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = String.new()
     s.len()
 ";
@@ -1540,7 +1540,7 @@ fn main()
 #[test]
 fn compile_string_len() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = String.from(\"abc\")
     s.len()
 ";
@@ -1962,7 +1962,7 @@ fn main() -> i64
 #[test]
 fn compile_string_concat_basic() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = String.from(\"hello\") + String.from(\" world\")
     s.len()
 ";
@@ -1973,7 +1973,7 @@ fn main() -> i64
 #[test]
 fn compile_string_concat_empty() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = String.from(\"abc\") + String.new()
     s.len()
 ";
@@ -2031,7 +2031,7 @@ fn main() -> i64
 #[test]
 fn compile_str_len() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = \"hello\"
     s.len()
 ";
@@ -2068,7 +2068,7 @@ fn main() -> i64
 #[test]
 fn compile_str_byte_at() {
     let src = "\
-fn main() -> i64
+fn main() -> u8
     let s = \"ABC\"
     s.byte_at(0)
 ";
@@ -2254,7 +2254,7 @@ fn main()
 #[test]
 fn compile_str_trim_start() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = \"  hello\".trim_start()
     s.len()
 ";
@@ -2265,7 +2265,7 @@ fn main() -> i64
 #[test]
 fn compile_str_trim_end() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = \"hello  \".trim_end()
     s.len()
 ";
@@ -2278,7 +2278,7 @@ fn main() -> i64
 #[test]
 fn compile_string_byte_at() {
     let src = "\
-fn main() -> i64
+fn main() -> u8
     let s = String.from(\"ABC\")
     s.byte_at(1)
 ";
@@ -2343,7 +2343,7 @@ fn main()
 #[test]
 fn compile_string_clear() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let mut s = String.from(\"hello\")
     s.clear()
     s.len()
@@ -2378,7 +2378,7 @@ fn main()
 #[test]
 fn compile_string_trim_start() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let s = String.from(\"  hello\")
     let t = s.trim_start()
     t.len()
@@ -2393,7 +2393,7 @@ fn compile_string_trim_end() {
 fn main() -> i64
     let s = String.from(\"hello  \")
     let t = s.trim_end()
-    t.len()
+    t.len() as i64
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 5);
@@ -2436,7 +2436,7 @@ fn main() -> i64
 #[test]
 fn compile_hashmap_len_after_insert() {
     let src = "\
-fn main() -> i64
+fn main() -> usize
     let mut m = HashMap[i64, i64].new()
     m.insert(1, 42)
     m.len()

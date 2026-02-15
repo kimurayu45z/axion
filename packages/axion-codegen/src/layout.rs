@@ -99,7 +99,7 @@ pub fn prim_to_llvm<'ctx>(context: &'ctx Context, prim: PrimTy) -> BasicTypeEnum
         PrimTy::I8 | PrimTy::U8 | PrimTy::Bool => context.i8_type().into(),
         PrimTy::I16 | PrimTy::U16 => context.i16_type().into(),
         PrimTy::I32 | PrimTy::U32 | PrimTy::Char => context.i32_type().into(),
-        PrimTy::I64 | PrimTy::U64 | PrimTy::Usize => context.i64_type().into(),
+        PrimTy::I64 | PrimTy::U64 | PrimTy::Usize | PrimTy::Isize => context.i64_type().into(),
         PrimTy::I128 | PrimTy::U128 => context.i128_type().into(),
         PrimTy::F16 | PrimTy::Bf16 => context.f16_type().into(),
         PrimTy::F32 => context.f32_type().into(),

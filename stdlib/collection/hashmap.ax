@@ -2,15 +2,15 @@ pub struct HashMap[K, V]
     _keys: Ptr[K]
     _values: Ptr[V]
     _states: Ptr[u8]
-    _size: i64
-    _cap: i64
+    _size: usize
+    _cap: usize
 
 impl[K, V] HashMap[K, V]
     fn new() -> HashMap[K, V]
         let m: HashMap[K, V] = HashMap #{_keys: 0 as Ptr[K], _values: 0 as Ptr[V], _states: 0 as Ptr[u8], _size: 0, _cap: 0}
         m
 
-    fn len(self) -> i64
+    fn len(self) -> usize
         self._size
 
     fn is_empty(self) -> bool
@@ -25,16 +25,14 @@ impl[K, V] HashMap[K, V]
         let temp = malloc(sz) as Ptr[K]
         temp.write(key)
         let bp = temp as Ptr[u8]
-        let mut h: i64 = 5381
-        let mut hi: i64 = 0
+        let mut h: usize = 5381
+        let mut hi: usize = 0
         while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as i64)
+            h = h * 33 + (bp.offset(hi).read() as usize)
             hi = hi + 1
         free(temp as Ptr[{}])
-        if h < 0
-            h = 0 - h
         let mut idx = h % self._cap
-        let mut count: i64 = 0
+        let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
             if state == (0 as u8)
@@ -57,16 +55,14 @@ impl[K, V] HashMap[K, V]
         let temp = malloc(sz) as Ptr[K]
         temp.write(key)
         let bp = temp as Ptr[u8]
-        let mut h: i64 = 5381
-        let mut hi: i64 = 0
+        let mut h: usize = 5381
+        let mut hi: usize = 0
         while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as i64)
+            h = h * 33 + (bp.offset(hi).read() as usize)
             hi = hi + 1
         free(temp as Ptr[{}])
-        if h < 0
-            h = 0 - h
         let mut idx = h % self._cap
-        let mut count: i64 = 0
+        let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
             if state == (0 as u8)
@@ -85,16 +81,14 @@ impl[K, V] HashMap[K, V]
         let temp = malloc(sz) as Ptr[K]
         temp.write(key)
         let bp = temp as Ptr[u8]
-        let mut h: i64 = 5381
-        let mut hi: i64 = 0
+        let mut h: usize = 5381
+        let mut hi: usize = 0
         while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as i64)
+            h = h * 33 + (bp.offset(hi).read() as usize)
             hi = hi + 1
         free(temp as Ptr[{}])
-        if h < 0
-            h = 0 - h
         let mut idx = h % self._cap
-        let mut count: i64 = 0
+        let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
             if state == (0 as u8)
@@ -113,16 +107,14 @@ impl[K, V] HashMap[K, V]
         let temp = malloc(sz) as Ptr[K]
         temp.write(key)
         let bp = temp as Ptr[u8]
-        let mut h: i64 = 5381
-        let mut hi: i64 = 0
+        let mut h: usize = 5381
+        let mut hi: usize = 0
         while hi < sz
-            h = h * 33 + (bp.offset(hi).read() as i64)
+            h = h * 33 + (bp.offset(hi).read() as usize)
             hi = hi + 1
         free(temp as Ptr[{}])
-        if h < 0
-            h = 0 - h
         let mut idx = h % self._cap
-        let mut count: i64 = 0
+        let mut count: usize = 0
         while count < self._cap
             let state = self._states.offset(idx).read()
             if state == (0 as u8)
@@ -148,14 +140,14 @@ impl[K, V] HashMap[K, V]
         self._keys = malloc(new_cap * sizeof[K]()) as Ptr[K]
         self._values = malloc(new_cap * sizeof[V]()) as Ptr[V]
         self._states = malloc(new_cap) as Ptr[u8]
-        let mut i: i64 = 0
+        let mut i: usize = 0
         while i < new_cap
             self._states.offset(i).write(0 as u8)
             i = i + 1
         self._cap = new_cap
         self._size = 0
         if old_cap > 0
-            let mut j: i64 = 0
+            let mut j: usize = 0
             while j < old_cap
                 if old_states.offset(j).read() == (1 as u8)
                     self.insert(old_keys.offset(j).read(), old_values.offset(j).read())

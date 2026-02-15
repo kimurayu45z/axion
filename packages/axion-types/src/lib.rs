@@ -322,11 +322,24 @@ pub fn type_check_with_imports(
                 // Resolve the target type by name (ImplFor items are not
                 // processed by the resolver, so resolutions won't contain
                 // span entries for them — look up symbols directly).
-                let (target_ty, target_type_name) = match &impl_for.target_type {
-                    TypeExpr::Named { name, .. } => {
+                let (target_ty, target_type_name, target_type_arg_strs) = match &impl_for.target_type {
+                    TypeExpr::Named { name, args, .. } => {
+                        let arg_strs: Vec<String> = args.iter().map(|a| {
+                            fn te_to_str(te: &TypeExpr) -> String {
+                                match te {
+                                    TypeExpr::Named { name, args, .. } if !args.is_empty() => {
+                                        let a: Vec<String> = args.iter().map(te_to_str).collect();
+                                        format!("{}[{}]", name, a.join(", "))
+                                    }
+                                    TypeExpr::Named { name, .. } => name.clone(),
+                                    _ => "?".to_string(),
+                                }
+                            }
+                            te_to_str(a)
+                        }).collect();
                         // Try primitive first
                         if let Some(prim) = crate::ty::PrimTy::from_name(name) {
-                            (Ty::Prim(prim), Some(name.clone()))
+                            (Ty::Prim(prim), Some(name.clone()), arg_strs)
                         } else if let Some(sym) = resolved.symbols.iter().find(|s| {
                             s.name == *name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
                         }) {
@@ -335,12 +348,12 @@ pub fn type_check_with_imports(
                                 SymbolKind::Enum => Ty::Enum { def_id: sym.def_id, type_args: vec![] },
                                 _ => Ty::Error,
                             };
-                            (ty, Some(name.clone()))
+                            (ty, Some(name.clone()), arg_strs)
                         } else {
-                            (Ty::Error, Some(name.clone()))
+                            (Ty::Error, Some(name.clone()), arg_strs)
                         }
                     }
-                    _ => (Ty::Error, None),
+                    _ => (Ty::Error, None, vec![]),
                 };
 
                 if let Some(iface_def_id) = iface_def_id {
@@ -369,11 +382,7 @@ pub fn type_check_with_imports(
                         // Duck-typed: check each required method exists on target type.
                         for (method_name, _) in &required_methods {
                             if let Some(ref tn) = target_type_name {
-                                let key = format!("{tn}.{method_name}");
-                                let has_method = resolved.symbols.iter().any(|s| {
-                                    s.name == key
-                                        && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
-                                });
+                                let has_method = resolved.find_method(tn, &target_type_arg_strs, method_name).is_some();
                                 if !has_method {
                                     diagnostics.push(errors::missing_method(
                                         &target_ty,

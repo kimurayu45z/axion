@@ -597,6 +597,9 @@ fn collect_from_expr(
                 collect_from_expr(m, resolved, type_check, result, seen);
             }
         }
+        ExprKind::Cast { expr: inner, .. } => {
+            collect_from_expr(inner, resolved, type_check, result, seen);
+        }
         _ => {}
     }
 }

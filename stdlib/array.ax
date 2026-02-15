@@ -1,14 +1,14 @@
 pub struct Array[T]
     _ptr: Ptr[T]
-    _len: i64
-    _cap: i64
+    _len: usize
+    _cap: usize
 
 impl[T] Array[T]
     fn new() -> Array[T]
         let a: Array[T] = Array #{_ptr: 0 as Ptr[T], _len: 0, _cap: 0}
         a
 
-    fn len(self) -> i64
+    fn len(self) -> usize
         self._len
 
     fn is_empty(self) -> bool
@@ -40,14 +40,14 @@ impl[T] Array[T]
         self._len = 0
 
     fn contains(self, item: T) -> bool
-        let mut i = 0
+        let mut i: usize = 0
         while i < self._len
             if self._ptr.offset(i).read() == item
                 return true
             i = i + 1
         false
 
-    fn remove(mut self, index: i64) -> T
+    fn remove(mut self, index: usize) -> T
         let val = self._ptr.offset(index).read()
         let shift = self._len - index - 1
         if shift > 0
@@ -57,7 +57,7 @@ impl[T] Array[T]
         self._len = self._len - 1
         val
 
-    fn insert(mut self, index: i64, item: T)
+    fn insert(mut self, index: usize, item: T)
         let new_len = self._len + 1
         if new_len > self._cap
             let mut new_cap = self._cap * 2
@@ -77,7 +77,7 @@ impl[T] Array[T]
     fn reverse(mut self)
         if self._len == 0
             return
-        let mut left = 0
+        let mut left: usize = 0
         let mut right = self._len - 1
         while left < right
             let l = self._ptr.offset(left).read()

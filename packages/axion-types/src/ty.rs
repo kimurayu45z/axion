@@ -47,6 +47,7 @@ pub enum PrimTy {
     U64,
     U128,
     Usize,
+    Isize,
     F16,
     F32,
     F64,
@@ -76,6 +77,7 @@ impl PrimTy {
             "u64" => Some(PrimTy::U64),
             "u128" => Some(PrimTy::U128),
             "usize" => Some(PrimTy::Usize),
+            "isize" => Some(PrimTy::Isize),
             "f16" => Some(PrimTy::F16),
             "f32" => Some(PrimTy::F32),
             "f64" => Some(PrimTy::F64),
@@ -103,6 +105,7 @@ impl PrimTy {
                 | PrimTy::U64
                 | PrimTy::U128
                 | PrimTy::Usize
+                | PrimTy::Isize
                 | PrimTy::F16
                 | PrimTy::F32
                 | PrimTy::F64
@@ -125,6 +128,7 @@ impl PrimTy {
                 | PrimTy::U64
                 | PrimTy::U128
                 | PrimTy::Usize
+                | PrimTy::Isize
         )
     }
 
@@ -137,7 +141,7 @@ impl PrimTy {
     pub fn is_signed(self) -> bool {
         matches!(
             self,
-            PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128
+            PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128 | PrimTy::Isize
         )
     }
 }
@@ -156,6 +160,7 @@ impl fmt::Display for PrimTy {
             PrimTy::U64 => "u64",
             PrimTy::U128 => "u128",
             PrimTy::Usize => "usize",
+            PrimTy::Isize => "isize",
             PrimTy::F16 => "f16",
             PrimTy::F32 => "f32",
             PrimTy::F64 => "f64",

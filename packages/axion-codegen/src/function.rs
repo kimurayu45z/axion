@@ -297,9 +297,8 @@ fn declare_method<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_span: Sp
         ty_to_llvm(ctx, ret).fn_type(&param_types, false)
     };
 
-    // Method name is "ReceiverType.methodName".
-    let receiver_name = type_expr_name(&m.receiver_type);
-    let fn_name = format!("{}.{}", receiver_name, m.name);
+    // Method name is "ReceiverType.methodName" (qualified for specialized impls).
+    let fn_name = method_fn_name(m);
     let fn_value = ctx.module.add_function(&fn_name, fn_type, None);
     ctx.functions.insert(def_id, fn_value);
 }
@@ -501,6 +500,35 @@ fn compile_method_body<'ctx>(ctx: &mut CodegenCtx<'ctx>, m: &MethodDef, item_spa
 /// Helper: extract the name from a TypeExpr.
 fn type_expr_name(te: &TypeExpr) -> String {
     match te {
+        TypeExpr::Named { name, .. } => name.clone(),
+        _ => "Unknown".to_string(),
+    }
+}
+
+/// Build the LLVM function name for a method.
+/// For specialized impls (no type_params, concrete receiver type args),
+/// produces qualified names like "Range[i64].next".
+/// For generic impls, produces "Array.push".
+fn method_fn_name(m: &MethodDef) -> String {
+    let base_name = type_expr_name(&m.receiver_type);
+    if m.type_params.is_empty() {
+        if let TypeExpr::Named { args, .. } = &m.receiver_type {
+            if !args.is_empty() {
+                let arg_strs: Vec<String> = args.iter().map(type_expr_to_string).collect();
+                return format!("{}[{}].{}", base_name, arg_strs.join(", "), m.name);
+            }
+        }
+    }
+    format!("{}.{}", base_name, m.name)
+}
+
+/// Convert a TypeExpr to its string representation.
+fn type_expr_to_string(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named { name, args, .. } if !args.is_empty() => {
+            let arg_strs: Vec<String> = args.iter().map(type_expr_to_string).collect();
+            format!("{}[{}]", name, arg_strs.join(", "))
+        }
         TypeExpr::Named { name, .. } => name.clone(),
         _ => "Unknown".to_string(),
     }

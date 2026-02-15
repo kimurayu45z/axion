@@ -580,6 +580,7 @@ fn compile_binop<'ctx>(
             | Ty::Prim(PrimTy::I32)
             | Ty::Prim(PrimTy::I64)
             | Ty::Prim(PrimTy::I128)
+            | Ty::Prim(PrimTy::Isize)
     );
 
     // String + String → concat
@@ -1077,12 +1078,13 @@ fn compile_call<'ctx>(
 
         // Check for method call.
         if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
-            let method_key = format!("{}.{}", type_name, field_name);
-            let method_def_id = ctx
-                .resolved
-                .symbols
-                .iter()
-                .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
+            let type_arg_strs: Vec<String> = match &inner_ty {
+                Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => {
+                    type_args.iter().map(|a| format!("{}", a)).collect()
+                }
+                _ => vec![],
+            };
+            let method_def_id = ctx.resolved.find_method(&type_name, &type_arg_strs, field_name)
                 .map(|s| s.def_id);
             if let Some(def_id) = method_def_id {
                 // Try monomorphized version first for generic receiver types.
@@ -1147,12 +1149,13 @@ fn compile_call<'ctx>(
         if let ExprKind::Field { expr: inner, name: field_name } = &type_app_inner.kind {
             let inner_ty = resolve_inner_ty(ctx, inner);
             if let Some(type_name) = get_type_name_for_method_ctx(ctx, &inner_ty) {
-                let method_key = format!("{}.{}", type_name, field_name);
-                let method_def_id = ctx
-                    .resolved
-                    .symbols
-                    .iter()
-                    .find(|s| s.name == method_key && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor))
+                let type_arg_strs: Vec<String> = match &inner_ty {
+                    Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => {
+                        type_args.iter().map(|a| format!("{}", a)).collect()
+                    }
+                    _ => vec![],
+                };
+                let method_def_id = ctx.resolved.find_method(&type_name, &type_arg_strs, field_name)
                     .map(|s| s.def_id);
                 if let Some(def_id) = method_def_id {
                     // Combine receiver type_args with turbofish type_args.
@@ -1954,7 +1957,7 @@ fn compile_println<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
                 build_printf_call(ctx, "%.*s\n", &[len.into(), ptr.into()]);
             }
         }
-        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) => {
+        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) | Ty::Prim(PrimTy::Isize) => {
             if let Some(val) = compile_expr(ctx, &arg.expr) {
                 build_printf_call(ctx, "%lld\n", &[val.into()]);
             }
@@ -2036,7 +2039,7 @@ fn compile_print<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
                 build_printf_call(ctx, "%.*s", &[len.into(), ptr.into()]);
             }
         }
-        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) => {
+        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) | Ty::Prim(PrimTy::Isize) => {
             if let Some(val) = compile_expr(ctx, &arg.expr) {
                 build_printf_call(ctx, "%lld", &[val.into()]);
             }
@@ -3439,9 +3442,8 @@ fn compile_str_byte_at<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[C
     let elem_ptr = unsafe {
         ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[idx], "byte_ptr").unwrap()
     };
-    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap().into_int_value();
-    let result = ctx.builder.build_int_z_extend(byte, ctx.context.i64_type(), "byte_i64").unwrap();
-    Some(result.into())
+    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap();
+    Some(byte)
 }
 
 /// Compile `s.slice(start, end)` for str → GEP + new {ptr, len}
@@ -3844,9 +3846,8 @@ fn compile_string_byte_at<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: 
     let elem_ptr = unsafe {
         ctx.builder.build_in_bounds_gep(ctx.context.i8_type(), ptr, &[idx], "byte_ptr").unwrap()
     };
-    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap().into_int_value();
-    let result = ctx.builder.build_int_z_extend(byte, ctx.context.i64_type(), "byte_i64").unwrap();
-    Some(result.into())
+    let byte = ctx.builder.build_load(ctx.context.i8_type(), elem_ptr, "byte").unwrap();
+    Some(byte)
 }
 
 fn compile_string_contains<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[CallArg]) -> Option<BasicValueEnum<'ctx>> {
@@ -4037,7 +4038,8 @@ fn compile_string_interp<'ctx>(
                     | Ty::Prim(PrimTy::I32)
                     | Ty::Prim(PrimTy::U64)
                     | Ty::Prim(PrimTy::U32)
-                    | Ty::Prim(PrimTy::Usize) => {
+                    | Ty::Prim(PrimTy::Usize)
+                    | Ty::Prim(PrimTy::Isize) => {
                         fmt.push_str("%lld");
                         if let Some(v) = val {
                             args.push(v.into());
@@ -4781,15 +4783,13 @@ fn compile_for<'ctx>(
 
     // --- Branch 3: Iter[T]: `for x in iter_expr` ---
     if let Some(type_name) = get_type_name_for_method_ctx(ctx, &iter_ty) {
-        let method_key = format!("{}.next", type_name);
-        let method_def_id = ctx
-            .resolved
-            .symbols
-            .iter()
-            .find(|s| {
-                s.name == method_key
-                    && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
-            })
+        let type_arg_strs: Vec<String> = match &iter_ty {
+            Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => {
+                type_args.iter().map(|a| format!("{}", a)).collect()
+            }
+            _ => vec![],
+        };
+        let method_def_id = ctx.resolved.find_method(&type_name, &type_arg_strs, "next")
             .map(|s| s.def_id);
 
         if let Some(def_id) = method_def_id {

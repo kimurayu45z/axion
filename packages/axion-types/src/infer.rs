@@ -172,7 +172,7 @@ impl<'a> InferCtx<'a> {
                 self.infer_expr(inner);
                 lower_type_expr(target, &self.resolved.symbols, &self.resolved.resolutions)
             }
-            ExprKind::SizeOf(_) => Ty::Prim(PrimTy::I64),
+            ExprKind::SizeOf(_) => Ty::Prim(PrimTy::Usize),
         }
     }
 
@@ -434,7 +434,7 @@ impl<'a> InferCtx<'a> {
             match name {
                 "read" => return Ty::Fn { params: vec![], ret: Box::new(*inner.clone()) },
                 "write" => return Ty::Fn { params: vec![*inner.clone()], ret: Box::new(Ty::Unit) },
-                "offset" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Ptr(inner.clone())) },
+                "offset" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::Usize)], ret: Box::new(Ty::Ptr(inner.clone())) },
                 "is_null" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
                 "null" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Ptr(inner.clone())) },
                 _ => {}
@@ -490,14 +490,14 @@ impl<'a> InferCtx<'a> {
         // str built-in methods
         if let Ty::Prim(PrimTy::Str) = resolved {
             match name {
-                "len" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::I64)) },
+                "len" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Usize)) },
                 "is_empty" => return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::Bool)) },
-                "byte_at" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Prim(PrimTy::I64)) },
+                "byte_at" => return Ty::Fn { params: vec![Ty::Prim(PrimTy::Usize)], ret: Box::new(Ty::Prim(PrimTy::U8)) },
                 "contains" | "starts_with" | "ends_with" => {
                     return Ty::Fn { params: vec![Ty::Prim(PrimTy::Str)], ret: Box::new(Ty::Prim(PrimTy::Bool)) };
                 }
                 "slice" | "substring" => {
-                    return Ty::Fn { params: vec![Ty::Prim(PrimTy::I64), Ty::Prim(PrimTy::I64)], ret: Box::new(Ty::Prim(PrimTy::Str)) };
+                    return Ty::Fn { params: vec![Ty::Prim(PrimTy::Usize), Ty::Prim(PrimTy::Usize)], ret: Box::new(Ty::Prim(PrimTy::Str)) };
                 }
                 "to_string" => {
                     let string_ty = self.get_string_struct_ty().unwrap_or(Ty::Error);
@@ -516,17 +516,15 @@ impl<'a> InferCtx<'a> {
 
         // Try to find a method/constructor: look up "TypeName.name" in values.
         // Search both local symbols and imported symbols (for cross-module types).
+        // For specialized impls (e.g. impl Range[i64]), tries "Range[i64].name" first.
         if let Some(type_name) = self.get_type_name(&resolved, inner) {
-            let key = format!("{type_name}.{name}");
-            let method_sym = self.resolved.symbols.iter()
-                .chain(self.resolved.imported_symbols.iter())
-                .find(|s| {
-                    s.name == key
-                        && matches!(
-                            s.kind,
-                            SymbolKind::Method | SymbolKind::Constructor
-                        )
-                });
+            let type_arg_strs: Vec<String> = match &resolved {
+                Ty::Enum { type_args, .. } | Ty::Struct { type_args, .. } => {
+                    type_args.iter().map(|a| format!("{}", a)).collect()
+                }
+                _ => vec![],
+            };
+            let method_sym = self.resolved.find_method(&type_name, &type_arg_strs, name);
             if let Some(sym) = method_sym {
                 if let Some(info) = self.env.defs.get(&sym.def_id) {
                     let mut method_ty = info.ty.clone();
@@ -1962,11 +1960,13 @@ impl<'a> InferCtx<'a> {
             for (method_name, _expected_fn_ty) in &required_methods {
                 let type_name = self.get_concrete_type_name(concrete_ty);
                 if let Some(ref type_name) = type_name {
-                    let key = format!("{type_name}.{method_name}");
-                    let has_method = self.resolved.symbols.iter().any(|s| {
-                        s.name == key
-                            && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
-                    });
+                    let type_arg_strs: Vec<String> = match concrete_ty {
+                        Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+                            type_args.iter().map(|a| format!("{}", a)).collect()
+                        }
+                        _ => vec![],
+                    };
+                    let has_method = self.resolved.find_method(type_name, &type_arg_strs, method_name).is_some();
                     if !has_method {
                         self.diagnostics.push(errors::missing_method(
                             concrete_ty,
@@ -2011,10 +2011,13 @@ impl<'a> InferCtx<'a> {
     /// that returns Option[T], and extract T.
     fn find_iter_elem_type(&self, ty: &Ty) -> Option<Ty> {
         let type_name = self.get_concrete_type_name(ty)?;
-        let method_key = format!("{}.next", type_name);
-        let method_sym = self.resolved.symbols.iter().find(|s| {
-            s.name == method_key && matches!(s.kind, SymbolKind::Method)
-        })?;
+        let type_arg_strs: Vec<String> = match ty {
+            Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+                type_args.iter().map(|a| format!("{}", a)).collect()
+            }
+            _ => vec![],
+        };
+        let method_sym = self.resolved.find_method(&type_name, &type_arg_strs, "next")?;
         let method_info = self.env.defs.get(&method_sym.def_id)?;
 
         // Get the method's return type.
@@ -2085,26 +2088,20 @@ impl<'a> InferCtx<'a> {
                 let inner_ty = self.expr_types.get(&inner.span.start);
                 if let Some(inner_ty) = inner_ty {
                     if let Some(type_name) = self.get_concrete_type_name(inner_ty) {
-                        let key = format!("{type_name}.{name}");
-                        return self.resolved.symbols.iter().find(|s| {
-                            s.name == key
-                                && matches!(
-                                    s.kind,
-                                    SymbolKind::Method | SymbolKind::Constructor
-                                )
-                        }).map(|s| s.def_id);
+                        let type_arg_strs: Vec<String> = match inner_ty {
+                            Ty::Struct { type_args, .. } | Ty::Enum { type_args, .. } => {
+                                type_args.iter().map(|a| format!("{}", a)).collect()
+                            }
+                            _ => vec![],
+                        };
+                        return self.resolved.find_method(&type_name, &type_arg_strs, name)
+                            .map(|s| s.def_id);
                     }
                 }
                 // Also check if inner is a type identifier.
                 if let ExprKind::Ident(type_name) = &inner.kind {
-                    let key = format!("{type_name}.{name}");
-                    return self.resolved.symbols.iter().find(|s| {
-                        s.name == key
-                            && matches!(
-                                s.kind,
-                                SymbolKind::Method | SymbolKind::Constructor
-                            )
-                    }).map(|s| s.def_id);
+                    return self.resolved.find_method(type_name, &[], name)
+                        .map(|s| s.def_id);
                 }
                 None
             }

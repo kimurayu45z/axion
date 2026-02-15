@@ -7,7 +7,7 @@ use crate::ResolveContext;
 /// Primitive type names built into the language.
 const PRIMITIVE_TYPES: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128",
-    "u8", "u16", "u32", "u64", "u128", "usize",
+    "u8", "u16", "u32", "u64", "u128", "usize", "isize",
     "f16", "f32", "f64", "bf16",
     "bool", "char", "str", "never",
 ];

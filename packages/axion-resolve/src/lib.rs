@@ -29,6 +29,38 @@ pub struct ResolveOutput {
     pub imported_symbols: Vec<Symbol>,
 }
 
+impl ResolveOutput {
+    /// Find a method/constructor symbol, trying specialized key first.
+    ///
+    /// For specialized impls like `impl Range[i64]`, the method is registered
+    /// as "Range[i64].next". For generic impls like `impl[T] Array[T]`, it's "Array.push".
+    ///
+    /// `type_arg_strs` should be the Display-formatted concrete type args (e.g., ["i64"]).
+    pub fn find_method(&self, type_name: &str, type_arg_strs: &[String], method_name: &str) -> Option<&Symbol> {
+        // Try specialized key first (e.g., "Range[i64].next")
+        if !type_arg_strs.is_empty() {
+            let specialized_key = format!("{}[{}].{}", type_name, type_arg_strs.join(", "), method_name);
+            let found = self.symbols.iter()
+                .chain(self.imported_symbols.iter())
+                .find(|s| {
+                    s.name == specialized_key
+                        && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+                });
+            if found.is_some() {
+                return found;
+            }
+        }
+        // Fall back to base key (e.g., "Array.push")
+        let base_key = format!("{}.{}", type_name, method_name);
+        self.symbols.iter()
+            .chain(self.imported_symbols.iter())
+            .find(|s| {
+                s.name == base_key
+                    && matches!(s.kind, SymbolKind::Method | SymbolKind::Constructor)
+            })
+    }
+}
+
 /// Internal mutable context threaded through the resolution passes.
 pub(crate) struct ResolveContext {
     pub symbols: Vec<Symbol>,

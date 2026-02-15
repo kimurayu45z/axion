@@ -69,7 +69,7 @@ impl TypeEnv {
     pub fn register_builtin_impls(&mut self, symbols: &[Symbol]) {
         use crate::ty::PrimTy;
 
-        let signed = [PrimTy::I8, PrimTy::I16, PrimTy::I32, PrimTy::I64, PrimTy::I128];
+        let signed = [PrimTy::I8, PrimTy::I16, PrimTy::I32, PrimTy::I64, PrimTy::I128, PrimTy::Isize];
         let unsigned = [PrimTy::U8, PrimTy::U16, PrimTy::U32, PrimTy::U64, PrimTy::U128, PrimTy::Usize];
         let floats = [PrimTy::F16, PrimTy::F32, PrimTy::F64, PrimTy::Bf16];
 
