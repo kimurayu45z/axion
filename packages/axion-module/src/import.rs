@@ -113,7 +113,45 @@ pub fn resolve_in_order(
         diagnostics.extend(resolve_diags);
 
         // Extract exports from this module.
-        let module_exports = extract_exports(&resolved);
+        let mut module_exports = extract_exports(&resolved);
+
+        // Process `export` declarations: re-export imported symbols.
+        for item in &modules[idx].ast.items {
+            if let ItemKind::Export(export_decl) = &item.kind {
+                for name in &export_decl.names {
+                    // Check if this name was imported.
+                    if let Some(import) = imports.iter().find(|(n, _, _)| n == name) {
+                        // Add as a public re-export.
+                        module_exports.push(Export {
+                            name: import.0.clone(),
+                            def_id: import.1,
+                            kind: import.2,
+                            vis: Visibility::Pub,
+                        });
+                        // For struct/enum re-exports, also re-export associated methods/constructors.
+                        if matches!(import.2, SymbolKind::Struct | SymbolKind::Enum) {
+                            let prefix = format!("{}.", name);
+                            for assoc in imports.iter().filter(|(n, _, _)| n.starts_with(&prefix)) {
+                                module_exports.push(Export {
+                                    name: assoc.0.clone(),
+                                    def_id: assoc.1,
+                                    kind: assoc.2,
+                                    vis: Visibility::Pub,
+                                });
+                            }
+                        }
+                    } else {
+                        diagnostics.push(errors::invalid_export(
+                            name,
+                            &modules[idx].file_path,
+                            export_decl.span,
+                            &modules[idx].source,
+                        ));
+                    }
+                }
+            }
+        }
+
         exports[idx] = module_exports;
 
         next_def_id += resolved.symbols.len() as u32;

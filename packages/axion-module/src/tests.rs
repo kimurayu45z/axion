@@ -342,3 +342,62 @@ fn std_import_collection_grouped() {
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
 }
+
+// -----------------------------------------------------------------------
+// Export re-export: A exports imported symbol, B imports from A
+// -----------------------------------------------------------------------
+
+#[test]
+fn export_reexport_function() {
+    let output = compile_sources(&[
+        (
+            "core.ax",
+            "pub fn base() -> i64\n    42\n",
+        ),
+        (
+            "facade.ax",
+            "import pkg.core.base\nexport base\n",
+        ),
+        (
+            "main.ax",
+            "import pkg.facade.base\n\nfn main() -> i64\n    base()\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+#[test]
+fn export_reexport_grouped() {
+    let output = compile_sources(&[
+        (
+            "math.ax",
+            "pub fn add(a: i64, b: i64) -> i64\n    a + b\n\npub fn sub(a: i64, b: i64) -> i64\n    a - b\n",
+        ),
+        (
+            "facade.ax",
+            "import pkg.math.{add, sub}\nexport {add, sub}\n",
+        ),
+        (
+            "main.ax",
+            "import pkg.facade.{add, sub}\n\nfn main() -> i64\n    add(1, sub(3, 1))\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
+}
+
+#[test]
+fn export_without_import_error() {
+    let output = compile_sources(&[
+        (
+            "facade.ax",
+            "export nonexistent\n",
+        ),
+    ]);
+    let errs = errors(&output.diagnostics);
+    assert!(
+        errs.iter().any(|d| d.code == "E0605"),
+        "expected E0605 invalid_export, got: {errs:?}"
+    );
+}

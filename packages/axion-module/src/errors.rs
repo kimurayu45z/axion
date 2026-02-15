@@ -8,6 +8,7 @@ pub const E0601: &str = "E0601";
 pub const E0602: &str = "E0602";
 pub const E0603: &str = "E0603";
 pub const E0604: &str = "E0604";
+pub const E0605: &str = "E0605";
 
 pub fn unresolved_module(path: &str, file: &str, span: Span, source: &str) -> Diagnostic {
     Diagnostic::error(
@@ -70,6 +71,17 @@ pub fn duplicate_import(name: &str, file: &str, span: Span, source: &str) -> Dia
         E0604,
         "duplicate_import",
         &format!("'{name}' is imported multiple times"),
+        file,
+        span,
+        source,
+    )
+}
+
+pub fn invalid_export(name: &str, file: &str, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::error(
+        E0605,
+        "invalid_export",
+        &format!("cannot export '{name}': only imported symbols can be exported"),
         file,
         span,
         source,
