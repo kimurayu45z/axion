@@ -6,6 +6,7 @@ pub const PRELUDE_RESULT: &str = include_str!("../../../stdlib/result.ax");
 pub const PRELUDE_ITER: &str = include_str!("../../../stdlib/iter.ax");
 pub const PRELUDE_RANGE: &str = include_str!("../../../stdlib/range.ax");
 pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/math.ax");
+pub const PRELUDE_STR: &str = include_str!("../../../stdlib/str.ax");
 pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/string.ax");
 pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/array.ax");
 pub const PRELUDE_IO: &str = include_str!("../../../stdlib/io.ax");
@@ -60,6 +61,7 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
         ("iter", PRELUDE_ITER, true),
         ("range", PRELUDE_RANGE, true),
         ("math", PRELUDE_MATH, true),
+        ("str", PRELUDE_STR, true),
         ("string", PRELUDE_STRING, true),
         ("array", PRELUDE_ARRAY, true),
         ("collection", COLLECTION_HASHMAP, false),
@@ -102,10 +104,10 @@ pub fn aux_std_modules() -> Vec<StdAuxModule> {
 /// Returns (combined_source, prelude_line_count).
 pub fn with_prelude(user_source: &str) -> (String, usize) {
     let combined = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
-        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING,
-        PRELUDE_ARRAY, user_source
+        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STR,
+        PRELUDE_STRING, PRELUDE_ARRAY, user_source
     );
     let prelude_lines = PRELUDE_FFI.lines().count()
         + PRELUDE_NUMBER.lines().count()
@@ -114,9 +116,10 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
         + PRELUDE_ITER.lines().count()
         + PRELUDE_RANGE.lines().count()
         + PRELUDE_MATH.lines().count()
+        + PRELUDE_STR.lines().count()
         + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
-        + 9;
+        + 10;
     (combined, prelude_lines)
 }
 
@@ -124,10 +127,10 @@ pub fn with_prelude(user_source: &str) -> (String, usize) {
 /// Used by tests that need HashMap/HashSet/BTreeMap/BTreeSet.
 pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
     let combined = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
-        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STRING,
-        PRELUDE_ARRAY,
+        PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STR,
+        PRELUDE_STRING, PRELUDE_ARRAY,
         COLLECTION_HASHMAP, COLLECTION_HASHSET,
         COLLECTION_BTREEMAP, COLLECTION_BTREESET,
         user_source
@@ -139,12 +142,13 @@ pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
         + PRELUDE_ITER.lines().count()
         + PRELUDE_RANGE.lines().count()
         + PRELUDE_MATH.lines().count()
+        + PRELUDE_STR.lines().count()
         + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
         + COLLECTION_HASHMAP.lines().count()
         + COLLECTION_HASHSET.lines().count()
         + COLLECTION_BTREEMAP.lines().count()
         + COLLECTION_BTREESET.lines().count()
-        + 13;
+        + 14;
     (combined, prelude_lines)
 }
