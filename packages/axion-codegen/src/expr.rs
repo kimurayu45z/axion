@@ -597,18 +597,16 @@ fn compile_binop<'ctx>(
         return compile_str_concat(ctx, lhs_val, rhs_val);
     }
 
-    // String == / != → memcmp comparison
-    if matches!(op, BinOp::Eq | BinOp::NotEq) {
-        if let Some(name) = get_type_name_for_method_ctx(ctx, &lhs_ty) {
-            if name == "String" {
-                return compile_string_compare(ctx, op, lhs_val, rhs_val);
-            }
+    // String/str comparison (same-type or cross-type, all 6 operators)
+    if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+        let rhs_ty = get_expr_ty(ctx, rhs);
+        let lhs_is_string = get_type_name_for_method_ctx(ctx, &lhs_ty).map_or(false, |n| n == "String");
+        let lhs_is_str = matches!(lhs_ty, Ty::Prim(PrimTy::Str));
+        let rhs_is_string = get_type_name_for_method_ctx(ctx, &rhs_ty).map_or(false, |n| n == "String");
+        let rhs_is_str = matches!(rhs_ty, Ty::Prim(PrimTy::Str));
+        if (lhs_is_string || lhs_is_str) && (rhs_is_string || rhs_is_str) {
+            return compile_bytes_compare(ctx, op, lhs_val, rhs_val, lhs_is_string, rhs_is_string);
         }
-    }
-
-    // str == / != → memcmp comparison
-    if matches!(op, BinOp::Eq | BinOp::NotEq) && matches!(lhs_ty, Ty::Prim(PrimTy::Str)) {
-        return compile_str_compare(ctx, op, lhs_val, rhs_val);
     }
 
     if is_float {
@@ -3168,48 +3166,89 @@ fn compile_string_concat<'ctx>(
     Some(sv.into())
 }
 
-/// Compile String == / != via memcmp.
-fn compile_string_compare<'ctx>(
+/// Extract (ptr, len) from a String or str value.
+/// String = struct { ptr, len, cap }; str = struct { ptr, len }.
+fn extract_bytes_parts<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    val: BasicValueEnum<'ctx>,
+    is_string: bool,
+) -> (inkwell::values::PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+    if is_string {
+        let sv = val.into_struct_value();
+        let ptr = ctx.builder.build_extract_value(sv, 0, "s_ptr").unwrap().into_pointer_value();
+        let len = ctx.builder.build_extract_value(sv, 1, "s_len").unwrap().into_int_value();
+        (ptr, len)
+    } else {
+        extract_str_parts(ctx, val)
+    }
+}
+
+/// Unified comparison for String/str (same-type or cross-type, all 6 operators).
+fn compile_bytes_compare<'ctx>(
     ctx: &mut CodegenCtx<'ctx>,
     op: BinOp,
     lhs_val: BasicValueEnum<'ctx>,
     rhs_val: BasicValueEnum<'ctx>,
+    lhs_is_string: bool,
+    rhs_is_string: bool,
 ) -> Option<BasicValueEnum<'ctx>> {
     let memcmp = ctx.module.get_function("memcmp")?;
-
-    // Extract ptr and len from lhs
-    let lhs_struct = lhs_val.into_struct_value();
-    let lhs_ptr = ctx.builder.build_extract_value(lhs_struct, 0, "lhs_ptr").unwrap().into_pointer_value();
-    let lhs_len = ctx.builder.build_extract_value(lhs_struct, 1, "lhs_len").unwrap().into_int_value();
-
-    // Extract ptr and len from rhs
-    let rhs_struct = rhs_val.into_struct_value();
-    let rhs_ptr = ctx.builder.build_extract_value(rhs_struct, 0, "rhs_ptr").unwrap().into_pointer_value();
-    let rhs_len = ctx.builder.build_extract_value(rhs_struct, 1, "rhs_len").unwrap().into_int_value();
-
-    // Fast path: lengths must be equal
-    let len_equal = ctx.builder.build_int_compare(IntPredicate::EQ, lhs_len, rhs_len, "len_eq").unwrap();
-
-    // memcmp(lhs_ptr, rhs_ptr, lhs_len)
-    let cmp_result = ctx.builder.build_call(
-        memcmp,
-        &[lhs_ptr.into(), rhs_ptr.into(), lhs_len.into()],
-        "memcmp_ret",
-    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
-
+    let (lhs_ptr, lhs_len) = extract_bytes_parts(ctx, lhs_val, lhs_is_string);
+    let (rhs_ptr, rhs_len) = extract_bytes_parts(ctx, rhs_val, rhs_is_string);
     let zero_i32 = ctx.context.i32_type().const_zero();
-    let content_equal = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "content_eq").unwrap();
-
-    // result = len_equal AND content_equal
-    let result = ctx.builder.build_and(len_equal, content_equal, "str_eq").unwrap();
 
     match op {
-        BinOp::Eq => Some(result.into()),
-        BinOp::NotEq => {
-            let negated = ctx.builder.build_not(result, "str_ne").unwrap();
-            Some(negated.into())
+        BinOp::Eq | BinOp::NotEq => {
+            // Fast path: lengths must be equal for equality.
+            let len_equal = ctx.builder.build_int_compare(IntPredicate::EQ, lhs_len, rhs_len, "len_eq").unwrap();
+            let cmp_result = ctx.builder.build_call(
+                memcmp,
+                &[lhs_ptr.into(), rhs_ptr.into(), lhs_len.into()],
+                "memcmp_ret",
+            ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+            let content_equal = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "content_eq").unwrap();
+            let result = ctx.builder.build_and(len_equal, content_equal, "str_eq").unwrap();
+            if op == BinOp::Eq {
+                Some(result.into())
+            } else {
+                Some(ctx.builder.build_not(result, "str_ne").unwrap().into())
+            }
         }
-        _ => unreachable!(),
+        BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+            // Lexicographic ordering:
+            // 1. min_len = min(lhs_len, rhs_len)
+            // 2. cmp = memcmp(lhs_ptr, rhs_ptr, min_len)
+            // 3. if cmp != 0 → use cmp sign
+            // 4. if cmp == 0 → compare lengths
+            let lhs_shorter = ctx.builder.build_int_compare(IntPredicate::ULT, lhs_len, rhs_len, "lhs_shorter").unwrap();
+            let min_len = ctx.builder.build_select(lhs_shorter, lhs_len, rhs_len, "min_len").unwrap().into_int_value();
+            // Guard against zero-length: memcmp with 0 returns 0, which is correct.
+            let cmp_result = ctx.builder.build_call(
+                memcmp,
+                &[lhs_ptr.into(), rhs_ptr.into(), min_len.into()],
+                "memcmp_ret",
+            ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+            let cmp_is_zero = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "cmp_zero").unwrap();
+
+            // Convert lengths to i32 for consistent comparison with memcmp result.
+            let lhs_len_i32 = ctx.builder.build_int_truncate(lhs_len, ctx.context.i32_type(), "lhs_i32").unwrap();
+            let rhs_len_i32 = ctx.builder.build_int_truncate(rhs_len, ctx.context.i32_type(), "rhs_i32").unwrap();
+            let len_diff = ctx.builder.build_int_sub(lhs_len_i32, rhs_len_i32, "len_diff").unwrap();
+
+            // effective = cmp_is_zero ? len_diff : cmp_result
+            let effective = ctx.builder.build_select(cmp_is_zero, len_diff, cmp_result, "effective").unwrap().into_int_value();
+
+            let pred = match op {
+                BinOp::Lt => IntPredicate::SLT,
+                BinOp::LtEq => IntPredicate::SLE,
+                BinOp::Gt => IntPredicate::SGT,
+                BinOp::GtEq => IntPredicate::SGE,
+                _ => unreachable!(),
+            };
+            let result = ctx.builder.build_int_compare(pred, effective, zero_i32, "ord_cmp").unwrap();
+            Some(result.into())
+        }
+        _ => None,
     }
 }
 
@@ -3284,33 +3323,6 @@ fn compile_str_slice<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr, args: &[Cal
     Some(build_str_struct(ctx, new_ptr, new_len))
 }
 
-/// Compile `a == b` / `a != b` for str via memcmp.
-fn compile_str_compare<'ctx>(
-    ctx: &mut CodegenCtx<'ctx>,
-    op: BinOp,
-    lhs_val: BasicValueEnum<'ctx>,
-    rhs_val: BasicValueEnum<'ctx>,
-) -> Option<BasicValueEnum<'ctx>> {
-    let memcmp = ctx.module.get_function("memcmp")?;
-    let (lhs_ptr, lhs_len) = extract_str_parts(ctx, lhs_val);
-    let (rhs_ptr, rhs_len) = extract_str_parts(ctx, rhs_val);
-
-    let len_equal = ctx.builder.build_int_compare(IntPredicate::EQ, lhs_len, rhs_len, "len_eq").unwrap();
-    let cmp_result = ctx.builder.build_call(
-        memcmp,
-        &[lhs_ptr.into(), rhs_ptr.into(), lhs_len.into()],
-        "memcmp_ret",
-    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
-    let zero_i32 = ctx.context.i32_type().const_zero();
-    let content_equal = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "content_eq").unwrap();
-    let result = ctx.builder.build_and(len_equal, content_equal, "str_eq").unwrap();
-
-    match op {
-        BinOp::Eq => Some(result.into()),
-        BinOp::NotEq => Some(ctx.builder.build_not(result, "str_ne").unwrap().into()),
-        _ => unreachable!(),
-    }
-}
 
 /// Compile `a + b` for str values → allocate new String buffer, memcpy both sides.
 fn compile_str_concat<'ctx>(

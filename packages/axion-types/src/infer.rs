@@ -267,15 +267,23 @@ impl<'a> InferCtx<'a> {
                 self.unify.resolve(&lhs_ty)
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-                // Both sides should unify; result is bool.
-                if self.unify.unify(&lhs_ty, &rhs_ty).is_err() {
-                    self.diagnostics.push(errors::type_mismatch(
-                        &self.unify.resolve(&lhs_ty),
-                        &self.unify.resolve(&rhs_ty),
-                        self.file_name,
-                        span,
-                        self.source,
-                    ));
+                // Allow cross-type String vs str comparison.
+                let lhs_r = self.unify.resolve(&lhs_ty);
+                let rhs_r = self.unify.resolve(&rhs_ty);
+                let is_string_str =
+                    (self.is_string_type(&lhs_r) && matches!(rhs_r, Ty::Prim(PrimTy::Str)))
+                    || (matches!(lhs_r, Ty::Prim(PrimTy::Str)) && self.is_string_type(&rhs_r));
+                if !is_string_str {
+                    // Both sides should unify; result is bool.
+                    if self.unify.unify(&lhs_ty, &rhs_ty).is_err() {
+                        self.diagnostics.push(errors::type_mismatch(
+                            &lhs_r,
+                            &rhs_r,
+                            self.file_name,
+                            span,
+                            self.source,
+                        ));
+                    }
                 }
                 Ty::Prim(PrimTy::Bool)
             }

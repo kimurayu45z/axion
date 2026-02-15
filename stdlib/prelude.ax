@@ -8,3 +8,4 @@ export core.math.*
 export core.str.*
 export core.string.*
 export core.array.*
+export core.ord.*
