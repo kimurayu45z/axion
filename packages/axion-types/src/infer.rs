@@ -127,7 +127,8 @@ impl<'a> InferCtx<'a> {
                         self.infer_expr(e);
                     }
                 }
-                Ty::Prim(PrimTy::Str)
+                // Backtick template literals produce String (heap-allocated)
+                self.get_string_struct_ty().unwrap_or(Ty::Error)
             }
             ExprKind::ArrayLit(elems) => self.infer_array_lit(elems),
             ExprKind::Index { expr: arr_expr, index } => {

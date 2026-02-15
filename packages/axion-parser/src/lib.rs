@@ -4385,11 +4385,11 @@ mod tests {
         }
     }
 
-    // --- Batch 5: String interpolation ---
+    // --- Batch 5: String interpolation (backtick template literals) ---
 
     #[test]
-    fn test_parse_string_interp_simple() {
-        let source = "fn main()\n    let x = \"Hello, {name}\"\n";
+    fn test_parse_backtick_interp_simple() {
+        let source = "fn main()\n    let x = `Hello, {name}`\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4431,8 +4431,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_string_interp_multi() {
-        let source = "fn main()\n    let x = \"a {x} b {y} c\"\n";
+    fn test_parse_string_brace_is_literal() {
+        // Double-quoted strings no longer do interpolation; { is just a character
+        let source = "fn main()\n    let x = \"{name}\"\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Function(f) => {
+                match &f.body[0].kind {
+                    StmtKind::Let { value, .. } => {
+                        assert!(matches!(value.kind, ExprKind::StringLit(ref s) if s == "{name}"));
+                    }
+                    _ => panic!("expected let"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_backtick_interp_multi() {
+        let source = "fn main()\n    let x = `a {x} b {y} c`\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
@@ -4441,7 +4460,7 @@ mod tests {
                     StmtKind::Let { value, .. } => {
                         match &value.kind {
                             ExprKind::StringInterp { parts } => {
-                                // "a " + x + " b " + y + " c"
+                                // `a ` + x + ` b ` + y + ` c`
                                 assert_eq!(parts.len(), 5);
                                 assert!(matches!(&parts[0], StringInterpPart::Literal(s) if s == "a "));
                                 assert!(matches!(&parts[1], StringInterpPart::Expr(_)));
@@ -4460,16 +4479,23 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_string_interp_escaped() {
-        let source = "fn main()\n    let x = \"\\{escaped}\"\n";
+    fn test_parse_backtick_interp_escaped() {
+        let source = "fn main()\n    let x = `\\{escaped}`\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
             ItemKind::Function(f) => {
                 match &f.body[0].kind {
                     StmtKind::Let { value, .. } => {
-                        // \{ should produce literal {, so no interpolation
-                        assert!(matches!(value.kind, ExprKind::StringLit(ref s) if s == "{escaped}"));
+                        // \{ in backtick produces literal {, so no interpolation
+                        // Result: StringInterp with single literal part "{escaped}"
+                        match &value.kind {
+                            ExprKind::StringInterp { parts } => {
+                                assert_eq!(parts.len(), 1);
+                                assert!(matches!(&parts[0], StringInterpPart::Literal(s) if s == "{escaped}"));
+                            }
+                            other => panic!("expected string interp, got {:?}", other),
+                        }
                     }
                     _ => panic!("expected let"),
                 }
@@ -4479,8 +4505,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_string_interp_expr() {
-        let source = "fn main()\n    let x = \"{a + b}\"\n";
+    fn test_parse_backtick_interp_expr() {
+        let source = "fn main()\n    let x = `{a + b}`\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {

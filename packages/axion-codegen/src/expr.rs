@@ -276,6 +276,15 @@ fn compile_ident<'ctx>(
     None
 }
 
+/// Get the String struct Ty from the resolved symbols.
+fn get_string_struct_ty_codegen<'ctx>(ctx: &CodegenCtx<'ctx>) -> Option<Ty> {
+    ctx.resolved
+        .symbols
+        .iter()
+        .find(|s| s.name == "String" && matches!(s.kind, SymbolKind::Struct))
+        .map(|s| Ty::Struct { def_id: s.def_id, type_args: vec![] })
+}
+
 /// Get the type name for method/constructor lookups (mirrors type checker logic).
 fn get_type_name_for_method_ctx<'ctx>(ctx: &CodegenCtx<'ctx>, ty: &Ty) -> Option<String> {
     match ty {
@@ -357,8 +366,11 @@ fn compile_binop<'ctx>(
             ty = axion_mono::specialize::substitute(&ty, &ctx.current_subst);
         }
         ty
-    } else if matches!(&lhs.kind, ExprKind::StringLit(_) | ExprKind::StringInterp { .. }) {
+    } else if matches!(&lhs.kind, ExprKind::StringLit(_)) {
         Ty::Prim(PrimTy::Str)
+    } else if matches!(&lhs.kind, ExprKind::StringInterp { .. }) {
+        // StringInterp (backtick template literals) produces String struct
+        get_string_struct_ty_codegen(ctx).unwrap_or(Ty::Prim(PrimTy::Str))
     } else {
         get_expr_ty(ctx, lhs)
     };
@@ -712,8 +724,10 @@ fn compile_call<'ctx>(
                     })
                 })
                 .unwrap_or_else(|| get_expr_ty(ctx, inner))
-        } else if matches!(&inner.kind, ExprKind::StringLit(_) | ExprKind::StringInterp { .. }) {
+        } else if matches!(&inner.kind, ExprKind::StringLit(_)) {
             Ty::Prim(PrimTy::Str)
+        } else if matches!(&inner.kind, ExprKind::StringInterp { .. }) {
+            get_string_struct_ty_codegen(ctx).unwrap_or(Ty::Prim(PrimTy::Str))
         } else {
             get_expr_ty(ctx, inner)
         };
@@ -4786,8 +4800,8 @@ fn compile_hashmap_remove<'ctx>(
 // String interpolation
 // ---------------------------------------------------------------------------
 
-/// Compile a string interpolation, e.g. `"Hello, {name}!"`.
-/// Uses snprintf to build the result as a `{ptr, len}` str.
+/// Compile a backtick template literal, e.g. `` `Hello, {name}!` ``.
+/// Uses snprintf to build the result as a `{ptr, len, cap}` String struct.
 fn compile_string_interp<'ctx>(
     ctx: &mut CodegenCtx<'ctx>,
     parts: &[StringInterpPart],
@@ -4944,23 +4958,33 @@ fn compile_string_interp<'ctx>(
         .build_call(snprintf, &write_args, "interp_write")
         .unwrap();
 
-    // Return {ptr, len} struct.
-    let str_struct_ty = ctx.context.struct_type(
-        &[ptr_ty.into(), ctx.context.i64_type().into()],
+    // Return {ptr, len, cap} String struct.
+    // cap = len + 1 (the malloc allocated len+1 bytes for the null terminator).
+    let string_struct_ty = ctx.context.struct_type(
+        &[ptr_ty.into(), ctx.context.i64_type().into(), ctx.context.i64_type().into()],
         false,
     );
-    let mut str_val = str_struct_ty.const_zero();
-    str_val = ctx
+    let cap = ctx
         .builder
-        .build_insert_value(str_val, buf_ptr, 0, "str_ptr")
+        .build_int_add(len_i64, ctx.context.i64_type().const_int(1, false), "cap")
+        .unwrap();
+    let mut string_val = string_struct_ty.const_zero();
+    string_val = ctx
+        .builder
+        .build_insert_value(string_val, buf_ptr, 0, "str_ptr")
         .unwrap()
         .into_struct_value();
-    str_val = ctx
+    string_val = ctx
         .builder
-        .build_insert_value(str_val, len_i64, 1, "str_len")
+        .build_insert_value(string_val, len_i64, 1, "str_len")
         .unwrap()
         .into_struct_value();
-    Some(str_val.into())
+    string_val = ctx
+        .builder
+        .build_insert_value(string_val, cap, 2, "str_cap")
+        .unwrap()
+        .into_struct_value();
+    Some(string_val.into())
 }
 
 // ---------------------------------------------------------------------------

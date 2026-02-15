@@ -223,9 +223,9 @@ fn compile_string_interp() {
     let src = "\
 fn main()
     let name = \"world\"
-    println(\"hello {name}\")
+    println(`hello {name}`)
 ";
-    let result = compile_and_run(src);
+    let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.stdout.trim(), "hello world");
 }
@@ -235,9 +235,9 @@ fn compile_string_interp_int() {
     let src = "\
 fn main()
     let x: i64 = 42
-    println(\"x is {x}\")
+    println(`x is {x}`)
 ";
-    let result = compile_and_run(src);
+    let result = compile_and_run_with_prelude(src);
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.stdout.trim(), "x is 42");
 }
@@ -446,13 +446,13 @@ fn main() -> i64
 #[test]
 fn compile_string_interp_freed() {
     // Test that string interpolation generates a free call for the buffer.
-    let src = r#"
+    let src = "\
 fn main()
     let x = 42
-    let s = "value is {x}"
+    let s = `value is {x}`
     println(s)
-"#;
-    let ir = compile_ir(src);
+";
+    let ir = compile_ir_with_prelude(src);
     assert!(ir.contains("call void @free"), "IR should contain a free call for string interp buffer");
 }
 
@@ -1591,7 +1591,7 @@ fn compile_string_type_interp() {
     let src = "\
 fn main()
     let s = String.from(\"world\")
-    println(\"hello {s}\")
+    println(`hello {s}`)
 ";
     let result = compile_and_run_with_prelude(src);
     assert_eq!(result.stdout.trim(), "hello world");

@@ -216,6 +216,9 @@ impl<'src> Lexer<'src> {
             // String literal
             b'"' => self.lex_string(start),
 
+            // Backtick template string literal
+            b'`' => self.lex_backtick(start),
+
             // Character literal
             b'\'' => self.lex_char(start),
 
@@ -476,6 +479,75 @@ impl<'src> Lexer<'src> {
                         Some(b'\\') => { content.push('\\'); self.advance(); }
                         Some(b'"') => { content.push('"'); self.advance(); }
                         Some(b'0') => { content.push('\0'); self.advance(); }
+                        _ => {
+                            self.diagnostics.push(Diagnostic::error(
+                                "E0006",
+                                "syntax_error",
+                                "invalid escape sequence",
+                                &self.file,
+                                Span::new((self.pos - 1) as u32, (self.pos + 1) as u32),
+                                self.source,
+                            ));
+                            self.advance();
+                        }
+                    }
+                }
+                Some(b'"') => {
+                    self.advance(); // closing "
+                    break;
+                }
+                Some(_) => {
+                    // Handle UTF-8 properly
+                    let ch_start = self.pos;
+                    let ch = self.next_char();
+                    if let Some(c) = ch {
+                        content.push(c);
+                    } else {
+                        self.diagnostics.push(Diagnostic::error(
+                            "E0007",
+                            "syntax_error",
+                            "invalid UTF-8 in string",
+                            &self.file,
+                            Span::new(ch_start as u32, self.pos as u32),
+                            self.source,
+                        ));
+                    }
+                }
+            }
+        }
+
+        Some(Token {
+            kind: TokenKind::StringLit(content),
+            span: Span::new(start as u32, self.pos as u32),
+        })
+    }
+
+    fn lex_backtick(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // opening `
+        let mut content = String::new();
+
+        loop {
+            match self.peek() {
+                None | Some(b'\n') => {
+                    self.diagnostics.push(Diagnostic::error(
+                        "E0005",
+                        "syntax_error",
+                        "unterminated backtick string literal",
+                        &self.file,
+                        Span::new(start as u32, self.pos as u32),
+                        self.source,
+                    ));
+                    break;
+                }
+                Some(b'\\') => {
+                    self.advance();
+                    match self.peek() {
+                        Some(b'n') => { content.push('\n'); self.advance(); }
+                        Some(b't') => { content.push('\t'); self.advance(); }
+                        Some(b'r') => { content.push('\r'); self.advance(); }
+                        Some(b'\\') => { content.push('\\'); self.advance(); }
+                        Some(b'`') => { content.push('`'); self.advance(); }
+                        Some(b'0') => { content.push('\0'); self.advance(); }
                         Some(b'{') => { content.push('{'); self.advance(); }
                         _ => {
                             self.diagnostics.push(Diagnostic::error(
@@ -503,7 +575,6 @@ impl<'src> Lexer<'src> {
                     let mut inner_tokens = vec![start_tok];
                     let mut brace_depth = 1u32;
                     while !self.is_eof() && brace_depth > 0 {
-                        // Skip spaces inside interpolation
                         if self.peek() == Some(b' ') {
                             self.advance();
                             continue;
@@ -523,7 +594,7 @@ impl<'src> Lexer<'src> {
                         }
                     }
 
-                    // Now continue reading the rest of the string
+                    // Now continue reading the rest of the backtick string
                     loop {
                         let mut part_content = String::new();
                         let part_start = self.pos;
@@ -533,17 +604,15 @@ impl<'src> Lexer<'src> {
                                     self.diagnostics.push(Diagnostic::error(
                                         "E0005",
                                         "syntax_error",
-                                        "unterminated string literal",
+                                        "unterminated backtick string literal",
                                         &self.file,
                                         Span::new(part_start as u32, self.pos as u32),
                                         self.source,
                                     ));
-                                    // Emit end token with whatever we have
                                     inner_tokens.push(Token {
                                         kind: TokenKind::StringInterpEnd(part_content),
                                         span: Span::new(part_start as u32, self.pos as u32),
                                     });
-                                    // Push all tokens in reverse onto pending
                                     inner_tokens.reverse();
                                     for tok in inner_tokens {
                                         self.pending.push(tok);
@@ -557,7 +626,7 @@ impl<'src> Lexer<'src> {
                                         Some(b't') => { part_content.push('\t'); self.advance(); }
                                         Some(b'r') => { part_content.push('\r'); self.advance(); }
                                         Some(b'\\') => { part_content.push('\\'); self.advance(); }
-                                        Some(b'"') => { part_content.push('"'); self.advance(); }
+                                        Some(b'`') => { part_content.push('`'); self.advance(); }
                                         Some(b'0') => { part_content.push('\0'); self.advance(); }
                                         Some(b'{') => { part_content.push('{'); self.advance(); }
                                         _ => {
@@ -573,13 +642,12 @@ impl<'src> Lexer<'src> {
                                         }
                                     }
                                 }
-                                Some(b'"') => {
-                                    self.advance(); // closing "
+                                Some(b'`') => {
+                                    self.advance(); // closing `
                                     inner_tokens.push(Token {
                                         kind: TokenKind::StringInterpEnd(part_content),
                                         span: Span::new(part_start as u32, self.pos as u32),
                                     });
-                                    // Push all tokens in reverse onto pending
                                     inner_tokens.reverse();
                                     for tok in inner_tokens {
                                         self.pending.push(tok);
@@ -593,7 +661,6 @@ impl<'src> Lexer<'src> {
                                         span: Span::new(part_start as u32, self.pos as u32),
                                     });
                                     self.advance(); // consume {
-                                    // Lex inner expression tokens
                                     let mut depth = 1u32;
                                     while !self.is_eof() && depth > 0 {
                                         if self.peek() == Some(b' ') {
@@ -626,12 +693,28 @@ impl<'src> Lexer<'src> {
                         }
                     }
                 }
-                Some(b'"') => {
-                    self.advance(); // closing "
-                    break;
+                Some(b'`') => {
+                    self.advance(); // closing `
+                    // No interpolation — emit as StringInterpStart + StringInterpEnd
+                    // so the parser produces StringInterp { parts: [Literal(content)] }
+                    // which gets typed as String.
+                    let mut inner_tokens = vec![
+                        Token {
+                            kind: TokenKind::StringInterpStart(content),
+                            span: Span::new(start as u32, self.pos as u32),
+                        },
+                        Token {
+                            kind: TokenKind::StringInterpEnd(String::new()),
+                            span: Span::new((self.pos - 1) as u32, self.pos as u32),
+                        },
+                    ];
+                    inner_tokens.reverse();
+                    for tok in inner_tokens {
+                        self.pending.push(tok);
+                    }
+                    return self.pending.pop();
                 }
                 Some(_) => {
-                    // Handle UTF-8 properly
                     let ch_start = self.pos;
                     let ch = self.next_char();
                     if let Some(c) = ch {
@@ -640,7 +723,7 @@ impl<'src> Lexer<'src> {
                         self.diagnostics.push(Diagnostic::error(
                             "E0007",
                             "syntax_error",
-                            "invalid UTF-8 in string",
+                            "invalid UTF-8 in backtick string",
                             &self.file,
                             Span::new(ch_start as u32, self.pos as u32),
                             self.source,
@@ -650,11 +733,22 @@ impl<'src> Lexer<'src> {
             }
         }
 
-        // No interpolation — emit plain StringLit
-        Some(Token {
-            kind: TokenKind::StringLit(content),
-            span: Span::new(start as u32, self.pos as u32),
-        })
+        // Unterminated — emit as StringInterpStart + StringInterpEnd with what we have
+        let mut inner_tokens = vec![
+            Token {
+                kind: TokenKind::StringInterpStart(content),
+                span: Span::new(start as u32, self.pos as u32),
+            },
+            Token {
+                kind: TokenKind::StringInterpEnd(String::new()),
+                span: Span::new(self.pos as u32, self.pos as u32),
+            },
+        ];
+        inner_tokens.reverse();
+        for tok in inner_tokens {
+            self.pending.push(tok);
+        }
+        self.pending.pop()
     }
 
     fn lex_char(&mut self, start: usize) -> Option<Token> {
@@ -920,11 +1014,11 @@ mod tests {
         );
     }
 
-    // --- String interpolation tests ---
+    // --- String interpolation tests (backtick template literals) ---
 
     #[test]
-    fn test_string_interp_simple() {
-        let kinds = token_kinds("\"Hello, {name}\"");
+    fn test_backtick_interp_simple() {
+        let kinds = token_kinds("`Hello, {name}`");
         assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "Hello, "));
         assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "name"));
         assert!(matches!(kinds[2], TokenKind::StringInterpEnd(ref s) if s == ""));
@@ -938,8 +1032,15 @@ mod tests {
     }
 
     #[test]
-    fn test_string_interp_multi() {
-        let kinds = token_kinds("\"a {x} b {y} c\"");
+    fn test_string_brace_is_literal() {
+        // Double-quoted strings no longer do interpolation; { is just a character
+        let kinds = token_kinds("\"{name}\"");
+        assert_eq!(kinds, vec![TokenKind::StringLit("{name}".into()), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn test_backtick_interp_multi() {
+        let kinds = token_kinds("`a {x} b {y} c`");
         assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "a "));
         assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "x"));
         assert!(matches!(kinds[2], TokenKind::StringInterpPart(ref s) if s == " b "));
@@ -949,20 +1050,40 @@ mod tests {
     }
 
     #[test]
-    fn test_string_interp_escaped() {
-        let kinds = token_kinds("\"\\{escaped}\"");
-        assert_eq!(kinds, vec![TokenKind::StringLit("{escaped}".into()), TokenKind::Eof]);
+    fn test_backtick_interp_escaped() {
+        let kinds = token_kinds("`\\{escaped}`");
+        // \{ in backtick string produces literal {, so no interpolation
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "{escaped}"));
+        assert!(matches!(kinds[1], TokenKind::StringInterpEnd(ref s) if s == ""));
+        assert_eq!(kinds[2], TokenKind::Eof);
     }
 
     #[test]
-    fn test_string_interp_expr() {
-        let kinds = token_kinds("\"{a + b}\"");
+    fn test_backtick_interp_expr() {
+        let kinds = token_kinds("`{a + b}`");
         assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == ""));
         assert!(matches!(kinds[1], TokenKind::Ident(ref s) if s == "a"));
         assert_eq!(kinds[2], TokenKind::Plus);
         assert!(matches!(kinds[3], TokenKind::Ident(ref s) if s == "b"));
         assert!(matches!(kinds[4], TokenKind::StringInterpEnd(ref s) if s == ""));
         assert_eq!(kinds[5], TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_backtick_no_interp() {
+        // Backtick string without interpolation still produces StringInterp tokens
+        let kinds = token_kinds("`plain text`");
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "plain text"));
+        assert!(matches!(kinds[1], TokenKind::StringInterpEnd(ref s) if s == ""));
+        assert_eq!(kinds[2], TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_backtick_escape_backtick() {
+        let kinds = token_kinds("`hello \\` world`");
+        assert!(matches!(kinds[0], TokenKind::StringInterpStart(ref s) if s == "hello ` world"));
+        assert!(matches!(kinds[1], TokenKind::StringInterpEnd(ref s) if s == ""));
+        assert_eq!(kinds[2], TokenKind::Eof);
     }
 
     #[test]
