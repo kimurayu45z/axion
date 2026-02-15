@@ -1,22 +1,22 @@
 /// The Axion prelude sources, loaded from stdlib/ at compile time.
-pub const PRELUDE_FFI: &str = include_str!("../../../stdlib/ffi.ax");
-pub const PRELUDE_NUMBER: &str = include_str!("../../../stdlib/number.ax");
-pub const PRELUDE_OPTION: &str = include_str!("../../../stdlib/option.ax");
-pub const PRELUDE_RESULT: &str = include_str!("../../../stdlib/result.ax");
-pub const PRELUDE_ITER: &str = include_str!("../../../stdlib/iter.ax");
-pub const PRELUDE_RANGE: &str = include_str!("../../../stdlib/range.ax");
-pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/math.ax");
-pub const PRELUDE_STR: &str = include_str!("../../../stdlib/str.ax");
-pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/string.ax");
-pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/array.ax");
-pub const PRELUDE_IO: &str = include_str!("../../../stdlib/io.ax");
-pub const PRELUDE_LOG: &str = include_str!("../../../stdlib/log.ax");
+pub const PRELUDE_FFI: &str = include_str!("../../../stdlib/core/ffi.ax");
+pub const PRELUDE_NUMBER: &str = include_str!("../../../stdlib/core/number.ax");
+pub const PRELUDE_OPTION: &str = include_str!("../../../stdlib/core/option.ax");
+pub const PRELUDE_RESULT: &str = include_str!("../../../stdlib/core/result.ax");
+pub const PRELUDE_ITER: &str = include_str!("../../../stdlib/core/iter.ax");
+pub const PRELUDE_RANGE: &str = include_str!("../../../stdlib/core/range.ax");
+pub const PRELUDE_MATH: &str = include_str!("../../../stdlib/core/math.ax");
+pub const PRELUDE_STR: &str = include_str!("../../../stdlib/core/str.ax");
+pub const PRELUDE_STRING: &str = include_str!("../../../stdlib/core/string.ax");
+pub const PRELUDE_ARRAY: &str = include_str!("../../../stdlib/core/array.ax");
 
-/// Collection module sources (included in prelude for resolution, but not auto-imported).
-pub const COLLECTION_HASHMAP: &str = include_str!("../../../stdlib/collection/hashmap.ax");
-pub const COLLECTION_HASHSET: &str = include_str!("../../../stdlib/collection/hashset.ax");
-pub const COLLECTION_BTREEMAP: &str = include_str!("../../../stdlib/collection/btreemap.ax");
-pub const COLLECTION_BTREESET: &str = include_str!("../../../stdlib/collection/btreeset.ax");
+/// Std module sources.
+pub const STD_IO: &str = include_str!("../../../stdlib/std/io.ax");
+pub const STD_LOG: &str = include_str!("../../../stdlib/std/log.ax");
+pub const STD_COLLECTION_HASHMAP: &str = include_str!("../../../stdlib/std/collection/hashmap.ax");
+pub const STD_COLLECTION_HASHSET: &str = include_str!("../../../stdlib/std/collection/hashset.ax");
+pub const STD_COLLECTION_BTREEMAP: &str = include_str!("../../../stdlib/std/collection/btreemap.ax");
+pub const STD_COLLECTION_BTREESET: &str = include_str!("../../../stdlib/std/collection/btreeset.ax");
 
 /// A boundary marker for one stdlib file within the combined prelude source.
 #[derive(Debug, Clone)]
@@ -64,10 +64,10 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
         ("str", PRELUDE_STR, true),
         ("string", PRELUDE_STRING, true),
         ("array", PRELUDE_ARRAY, true),
-        ("collection", COLLECTION_HASHMAP, false),
-        ("collection", COLLECTION_HASHSET, false),
-        ("collection", COLLECTION_BTREEMAP, false),
-        ("collection", COLLECTION_BTREESET, false),
+        ("collection", STD_COLLECTION_HASHMAP, false),
+        ("collection", STD_COLLECTION_HASHSET, false),
+        ("collection", STD_COLLECTION_BTREEMAP, false),
+        ("collection", STD_COLLECTION_BTREESET, false),
     ];
 
     let mut combined = String::new();
@@ -95,8 +95,8 @@ pub fn prelude_source_with_boundaries() -> (String, Vec<StdFileBoundary>) {
 /// These are parsed separately and available only via explicit `use std.<module>.*`.
 pub fn aux_std_modules() -> Vec<StdAuxModule> {
     vec![
-        StdAuxModule { name: "io".to_string(), source: PRELUDE_IO },
-        StdAuxModule { name: "log".to_string(), source: PRELUDE_LOG },
+        StdAuxModule { name: "io".to_string(), source: STD_IO },
+        StdAuxModule { name: "log".to_string(), source: STD_LOG },
     ]
 }
 
@@ -131,8 +131,8 @@ pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
         PRELUDE_FFI, PRELUDE_NUMBER, PRELUDE_OPTION, PRELUDE_RESULT,
         PRELUDE_ITER, PRELUDE_RANGE, PRELUDE_MATH, PRELUDE_STR,
         PRELUDE_STRING, PRELUDE_ARRAY,
-        COLLECTION_HASHMAP, COLLECTION_HASHSET,
-        COLLECTION_BTREEMAP, COLLECTION_BTREESET,
+        STD_COLLECTION_HASHMAP, STD_COLLECTION_HASHSET,
+        STD_COLLECTION_BTREEMAP, STD_COLLECTION_BTREESET,
         user_source
     );
     let prelude_lines = PRELUDE_FFI.lines().count()
@@ -145,10 +145,10 @@ pub fn with_prelude_and_collections(user_source: &str) -> (String, usize) {
         + PRELUDE_STR.lines().count()
         + PRELUDE_STRING.lines().count()
         + PRELUDE_ARRAY.lines().count()
-        + COLLECTION_HASHMAP.lines().count()
-        + COLLECTION_HASHSET.lines().count()
-        + COLLECTION_BTREEMAP.lines().count()
-        + COLLECTION_BTREESET.lines().count()
+        + STD_COLLECTION_HASHMAP.lines().count()
+        + STD_COLLECTION_HASHSET.lines().count()
+        + STD_COLLECTION_BTREEMAP.lines().count()
+        + STD_COLLECTION_BTREESET.lines().count()
         + 14;
     (combined, prelude_lines)
 }
