@@ -17,7 +17,7 @@ pub struct ModuleGraph {
 impl ModuleGraph {
     /// Build the dependency graph from a set of modules.
     ///
-    /// Scans each module's `use` declarations to determine edges.
+    /// Scans each module's `import` declarations to determine edges.
     pub fn build(modules: &[Module]) -> (Self, Vec<Diagnostic>) {
         let mut diagnostics = Vec::new();
         let mut path_to_idx = HashMap::new();
@@ -29,21 +29,21 @@ impl ModuleGraph {
 
         for (i, module) in modules.iter().enumerate() {
             for item in &module.ast.items {
-                if let ItemKind::Use(use_decl) = &item.kind {
+                if let ItemKind::Import(import_decl) = &item.kind {
                     if let Some(target_idx) =
-                        resolve_use_target(&use_decl.path, &path_to_idx, modules)
+                        resolve_import_target(&import_decl.path, &path_to_idx, modules)
                     {
                         if !dependencies[i].contains(&target_idx) {
                             dependencies[i].push(target_idx);
                         }
-                    } else if use_decl.path.first().map(|s| s.as_str()) != Some("std") {
+                    } else if import_decl.path.first().map(|s| s.as_str()) != Some("std") {
                         // Build the module path string for the error.
                         // Skip `std.*` paths — they are validated in resolve_in_order.
-                        let path_str = use_decl.path.join(".");
+                        let path_str = import_decl.path.join(".");
                         diagnostics.push(errors::unresolved_module(
                             &path_str,
                             &module.file_path,
-                            use_decl.span,
+                            import_decl.span,
                             &module.source,
                         ));
                     }
@@ -99,8 +99,8 @@ impl ModuleGraph {
                     modules[u].module_path.display(),
                     modules[v].module_path.display(),
                 );
-                // Find the use decl that caused this edge.
-                let span = find_use_span_for_dep(&modules[u], &modules[v]);
+                // Find the import decl that caused this edge.
+                let span = find_import_span_for_dep(&modules[u], &modules[v]);
                 diagnostics.push(errors::circular_import(
                     &cycle_str,
                     &modules[u].file_path,
@@ -146,12 +146,12 @@ impl ModuleGraph {
     }
 }
 
-/// Resolve a `use` path to a target module index.
+/// Resolve an `import` path to a target module index.
 ///
 /// Path format: `pkg.module_segment.name` or `pkg.module_segment.{name1, name2}`
 /// The first segment is `pkg` (current package). The remaining segments minus the last
 /// determine the target module path.
-fn resolve_use_target(
+fn resolve_import_target(
     path: &[String],
     path_to_idx: &HashMap<Vec<String>, usize>,
     _modules: &[Module],
@@ -200,30 +200,29 @@ fn resolve_use_target(
     None
 }
 
-/// Find the span of a `use` declaration in `source_module` that targets `target_module`.
-fn find_use_span_for_dep(
+/// Find the span of an `import` declaration in `source_module` that targets `target_module`.
+fn find_import_span_for_dep(
     source_module: &Module,
     target_module: &Module,
 ) -> axion_syntax::Span {
     for item in &source_module.ast.items {
-        if let ItemKind::Use(use_decl) = &item.kind {
-            // Check if this use points to the target module.
-            let segments = if !use_decl.path.is_empty()
-                && (use_decl.path[0] == "pkg" || use_decl.path[0] == "std")
+        if let ItemKind::Import(import_decl) = &item.kind {
+            let segments = if !import_decl.path.is_empty()
+                && (import_decl.path[0] == "pkg" || import_decl.path[0] == "std")
             {
-                &use_decl.path[1..]
+                &import_decl.path[1..]
             } else {
-                &use_decl.path[..]
+                &import_decl.path[..]
             };
 
             // Match against target module path.
             let target = &target_module.module_path.0;
             if segments == target.as_slice() {
-                return use_decl.span;
+                return import_decl.span;
             }
             // Also try: segments without last == target module path.
             if segments.len() >= 2 && &segments[..segments.len() - 1] == target.as_slice() {
-                return use_decl.span;
+                return import_decl.span;
             }
         }
     }

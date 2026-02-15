@@ -111,11 +111,18 @@ impl Parser {
                     kind: ItemKind::Test(test_def),
                 })
             }
-            Some(TokenKind::Use) => {
-                let use_decl = self.parse_use_decl()?;
+            Some(TokenKind::Import) => {
+                let import_decl = self.parse_import_decl()?;
                 Some(Item {
                     span: start_span.merge(self.prev_span()),
-                    kind: ItemKind::Use(use_decl),
+                    kind: ItemKind::Import(import_decl),
+                })
+            }
+            Some(TokenKind::Export) => {
+                let export_decl = self.parse_export_decl()?;
+                Some(Item {
+                    span: start_span.merge(self.prev_span()),
+                    kind: ItemKind::Export(export_decl),
                 })
             }
             Some(TokenKind::Extern) => {
@@ -127,7 +134,7 @@ impl Parser {
             }
             _ => {
                 if vis != Visibility::Private {
-                    self.error("expected `fn`, `struct`, `enum`, `interface`, `type`, or `use` after visibility modifier");
+                    self.error("expected `fn`, `struct`, `enum`, `interface`, `type`, or `import` after visibility modifier");
                 }
                 None
             }
@@ -2740,9 +2747,9 @@ impl Parser {
         })
     }
 
-    fn parse_use_decl(&mut self) -> Option<UseDecl> {
+    fn parse_import_decl(&mut self) -> Option<ImportDecl> {
         let span = self.current_span();
-        self.expect(&TokenKind::Use)?;
+        self.expect(&TokenKind::Import)?;
 
         let mut path = Vec::new();
         // First segment can be an ident, type ident, or `pkg` keyword
@@ -2762,7 +2769,7 @@ impl Parser {
                 path.push("pkg".to_string());
             }
             _ => {
-                self.error("expected module path after `use`");
+                self.error("expected module path after `import`");
                 return None;
             }
         }
@@ -2771,7 +2778,7 @@ impl Parser {
             self.advance();
             match self.peek_kind() {
                 Some(TokenKind::LBrace) => {
-                    // Grouped use: use foo.bar.{A, B, C}
+                    // Grouped import: import foo.bar.{A, B, C}
                     break;
                 }
                 Some(TokenKind::Ident(_)) => {
@@ -2785,7 +2792,7 @@ impl Parser {
                     }
                 }
                 _ => {
-                    self.error("expected identifier in use path");
+                    self.error("expected identifier in import path");
                     break;
                 }
             }
@@ -2811,9 +2818,40 @@ impl Parser {
             None
         };
 
-        Some(UseDecl {
+        Some(ImportDecl {
             path,
             members,
+            span: span.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_export_decl(&mut self) -> Option<ExportDecl> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Export)?;
+
+        let mut names = Vec::new();
+
+        if self.check(&TokenKind::LBrace) {
+            // Grouped export: export {HashMap, HashSet}
+            self.advance();
+            if !self.check(&TokenKind::RBrace) {
+                names.push(self.expect_any_ident()?);
+                while self.check(&TokenKind::Comma) {
+                    self.advance();
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    names.push(self.expect_any_ident()?);
+                }
+            }
+            self.expect(&TokenKind::RBrace)?;
+        } else {
+            // Single export: export HashMap
+            names.push(self.expect_any_ident()?);
+        }
+
+        Some(ExportDecl {
+            names,
             span: span.merge(self.prev_span()),
         })
     }
@@ -3732,16 +3770,42 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_use_grouped() {
-        let source = "use std.collections.{HashMap, HashSet}\n";
+    fn test_parse_import_grouped() {
+        let source = "import std.collections.{HashMap, HashSet}\n";
         let (file, diagnostics) = parse(source, "test.ax");
         assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
         match &file.items[0].kind {
-            ItemKind::Use(u) => {
+            ItemKind::Import(u) => {
                 assert_eq!(u.path, vec!["std", "collections"]);
                 assert_eq!(u.members, Some(vec!["HashMap".to_string(), "HashSet".to_string()]));
             }
-            other => panic!("expected use, got {:?}", other),
+            other => panic!("expected import, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_export_single() {
+        let source = "export HashMap\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Export(e) => {
+                assert_eq!(e.names, vec!["HashMap".to_string()]);
+            }
+            other => panic!("expected export, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_export_grouped() {
+        let source = "export {HashMap, HashSet}\n";
+        let (file, diagnostics) = parse(source, "test.ax");
+        assert!(diagnostics.is_empty(), "errors: {:?}", diagnostics);
+        match &file.items[0].kind {
+            ItemKind::Export(e) => {
+                assert_eq!(e.names, vec!["HashMap".to_string(), "HashSet".to_string()]);
+            }
+            other => panic!("expected export, got {:?}", other),
         }
     }
 

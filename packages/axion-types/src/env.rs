@@ -179,8 +179,8 @@ impl TypeEnv {
             ItemKind::Interface(iface) => {
                 self.register_interface_def(iface, item, symbols, resolutions);
             }
-            ItemKind::Use(_) | ItemKind::Test(_) => {
-                // Use decls and tests don't need type env entries.
+            ItemKind::Import(_) | ItemKind::Export(_) | ItemKind::Test(_) => {
+                // Import/export decls and tests don't need type env entries.
             }
             ItemKind::ImplFor(_) => {
                 // Checked in type_check phase, not env building.

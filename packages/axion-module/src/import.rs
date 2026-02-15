@@ -25,7 +25,7 @@ pub struct Export {
 ///
 /// `prelude_imports`: symbols to inject into every module (from the prelude module).
 /// `start_def_id_offset`: the starting DefId offset (accounts for prelude symbols).
-/// `std_exports`: per-std-module exports for validating `use std.*` declarations.
+/// `std_exports`: per-std-module exports for validating `import std.*` declarations.
 pub fn resolve_in_order(
     modules: &mut [Module],
     graph: &ModuleGraph,
@@ -46,9 +46,9 @@ pub fn resolve_in_order(
         imports.extend_from_slice(prelude_imports);
         let mut imported_names: HashMap<String, usize> = HashMap::new(); // name → dep_idx
 
-        // Validate `use std.*` declarations against std_exports.
+        // Validate `import std.*` declarations against std_exports.
         // Also inject symbols from non-auto-import std modules (like io, log)
-        // that the user explicitly imports via `use std.*`.
+        // that the user explicitly imports via `import std.*`.
         if !std_exports.is_empty() {
             let std_extra = validate_std_imports(&modules[idx], std_exports, &mut diagnostics);
             imports.extend(std_extra);
@@ -69,7 +69,7 @@ pub fn resolve_in_order(
                             req_name,
                             &modules[dep_idx].module_path.display(),
                             &modules[idx].file_path,
-                            find_use_span(&modules[idx], req_name),
+                            find_import_span(&modules[idx], req_name),
                             &modules[idx].source,
                         ));
                         continue;
@@ -81,7 +81,7 @@ pub fn resolve_in_order(
                             diagnostics.push(errors::duplicate_import(
                                 req_name,
                                 &modules[idx].file_path,
-                                find_use_span(&modules[idx], req_name),
+                                find_import_span(&modules[idx], req_name),
                                 &modules[idx].source,
                             ));
                             continue;
@@ -95,7 +95,7 @@ pub fn resolve_in_order(
                         req_name,
                         &modules[dep_idx].module_path.display(),
                         &modules[idx].file_path,
-                        find_use_span(&modules[idx], req_name),
+                        find_import_span(&modules[idx], req_name),
                         &modules[idx].source,
                     ));
                 }
@@ -161,21 +161,21 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
     let target_path = &target.module_path.0;
 
     for item in &source.ast.items {
-        if let ItemKind::Use(use_decl) = &item.kind {
-            let segments = if !use_decl.path.is_empty()
-                && (use_decl.path[0] == "pkg" || use_decl.path[0] == "std")
+        if let ItemKind::Import(import_decl) = &item.kind {
+            let segments = if !import_decl.path.is_empty()
+                && (import_decl.path[0] == "pkg" || import_decl.path[0] == "std")
             {
-                &use_decl.path[1..]
+                &import_decl.path[1..]
             } else {
-                &use_decl.path[..]
+                &import_decl.path[..]
             };
 
-            // Check if this use targets the given module.
-            // Case 1: `use pkg.math.add` → segments = ["math", "add"], target = ["math"]
+            // Check if this import targets the given module.
+            // Case 1: `import pkg.math.add` → segments = ["math", "add"], target = ["math"]
             if segments.len() >= 2 && &segments[..segments.len() - 1] == target_path.as_slice() {
                 let item_name = &segments[segments.len() - 1];
                 // If there are grouped members, use those instead.
-                if let Some(ref members) = use_decl.members {
+                if let Some(ref members) = import_decl.members {
                     for member in members {
                         names.push(member.clone());
                     }
@@ -183,9 +183,9 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
                     names.push(item_name.clone());
                 }
             }
-            // Case 2: `use pkg.math.{add, sub}` where segments == target_path
+            // Case 2: `import pkg.math.{add, sub}` where segments == target_path
             else if segments == target_path.as_slice() {
-                if let Some(ref members) = use_decl.members {
+                if let Some(ref members) = import_decl.members {
                     for member in members {
                         names.push(member.clone());
                     }
@@ -197,7 +197,7 @@ fn collect_imports_from(source: &Module, target: &Module) -> Vec<String> {
     names
 }
 
-/// Validate `use std.*` declarations in a module against the std exports map.
+/// Validate `import std.*` declarations in a module against the std exports map.
 ///
 /// Returns extra imports for symbols from non-auto-import std modules (e.g. io, log)
 /// that the user explicitly imports. Auto-import module symbols are already in the
@@ -209,33 +209,33 @@ fn validate_std_imports(
 ) -> Vec<(String, DefId, SymbolKind)> {
     let mut extra_imports = Vec::new();
     for item in &module.ast.items {
-        if let ItemKind::Use(use_decl) = &item.kind {
-            if use_decl.path.first().map(|s| s.as_str()) != Some("std") {
+        if let ItemKind::Import(import_decl) = &item.kind {
+            if import_decl.path.first().map(|s| s.as_str()) != Some("std") {
                 continue;
             }
             // Expect at least `std.<module>.<name>` (3 segments),
             // or `std.<module>.{names}` (2 segments with members).
-            let has_members = use_decl.members.is_some();
-            if use_decl.path.len() < 3 && !(use_decl.path.len() == 2 && has_members) {
-                let path_str = use_decl.path.join(".");
+            let has_members = import_decl.members.is_some();
+            if import_decl.path.len() < 3 && !(import_decl.path.len() == 2 && has_members) {
+                let path_str = import_decl.path.join(".");
                 diagnostics.push(errors::unresolved_module(
                     &path_str,
                     &module.file_path,
-                    use_decl.span,
+                    import_decl.span,
                     &module.source,
                 ));
                 continue;
             }
 
-            let std_mod_name = &use_decl.path[1];
+            let std_mod_name = &import_decl.path[1];
             let mod_exports = match std_exports.get(std_mod_name.as_str()) {
                 Some(exports) => exports,
                 None => {
-                    let path_str = use_decl.path.join(".");
+                    let path_str = import_decl.path.join(".");
                     diagnostics.push(errors::unresolved_module(
                         &path_str,
                         &module.file_path,
-                        use_decl.span,
+                        import_decl.span,
                         &module.source,
                     ));
                     continue;
@@ -243,10 +243,10 @@ fn validate_std_imports(
             };
 
             // Collect requested names: either grouped `{a, b}` or the last path segment.
-            let names: Vec<&str> = if let Some(ref members) = use_decl.members {
+            let names: Vec<&str> = if let Some(ref members) = import_decl.members {
                 members.iter().map(|s| s.as_str()).collect()
             } else {
-                vec![use_decl.path.last().unwrap().as_str()]
+                vec![import_decl.path.last().unwrap().as_str()]
             };
 
             for name in &names {
@@ -269,7 +269,7 @@ fn validate_std_imports(
                         name,
                         &format!("std.{}", std_mod_name),
                         &module.file_path,
-                        use_decl.span,
+                        import_decl.span,
                         &module.source,
                     ));
                 }
@@ -280,16 +280,16 @@ fn validate_std_imports(
     extra_imports
 }
 
-/// Find the span of a use declaration that imports a given name.
-fn find_use_span(module: &Module, name: &str) -> axion_syntax::Span {
+/// Find the span of an import declaration that imports a given name.
+fn find_import_span(module: &Module, name: &str) -> axion_syntax::Span {
     for item in &module.ast.items {
-        if let ItemKind::Use(use_decl) = &item.kind {
-            if let Some(ref members) = use_decl.members {
+        if let ItemKind::Import(import_decl) = &item.kind {
+            if let Some(ref members) = import_decl.members {
                 if members.iter().any(|m| m == name) {
-                    return use_decl.span;
+                    return import_decl.span;
                 }
-            } else if use_decl.path.last().is_some_and(|last| last == name) {
-                return use_decl.span;
+            } else if import_decl.path.last().is_some_and(|last| last == name) {
+                return import_decl.span;
             }
         }
     }

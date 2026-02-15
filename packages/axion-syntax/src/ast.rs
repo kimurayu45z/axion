@@ -22,7 +22,8 @@ pub enum ItemKind {
     Enum(EnumDef),
     Interface(InterfaceDef),
     TypeAlias(TypeAlias),
-    Use(UseDecl),
+    Import(ImportDecl),
+    Export(ExportDecl),
     Extern(ExternBlock),
     Test(TestDef),
     ImplFor(ImplForDef),
@@ -289,12 +290,20 @@ pub struct TypeAlias {
     pub ty: TypeExpr,
 }
 
-// --- Use declaration ---
+// --- Import declaration ---
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UseDecl {
+pub struct ImportDecl {
     pub path: Vec<String>,
     pub members: Option<Vec<String>>,
+    pub span: Span,
+}
+
+// --- Export declaration ---
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportDecl {
+    pub names: Vec<String>,
     pub span: Span,
 }
 

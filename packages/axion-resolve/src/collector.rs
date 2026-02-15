@@ -181,8 +181,11 @@ fn collect_item(ctx: &mut ResolveContext, item: &Item, root: ScopeId) {
             }
         }
 
-        ItemKind::Use(_) => {
-            // Use declarations require cross-module resolution — deferred.
+        ItemKind::Import(_) => {
+            // Import declarations require cross-module resolution — deferred.
+        }
+        ItemKind::Export(_) => {
+            // Export declarations require cross-module resolution — deferred.
         }
 
         ItemKind::Test(_) => {

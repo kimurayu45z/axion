@@ -19,7 +19,7 @@ fn basic_cross_file_import() {
         ),
         (
             "main.ax",
-            "use pkg.math.add\n\nfn main()\n    add(1, 2)\n",
+            "import pkg.math.add\n\nfn main()\n    add(1, 2)\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -39,7 +39,7 @@ fn import_struct_type() {
         ),
         (
             "main.ax",
-            "use pkg.shapes.Point\n\nfn make() -> Point\n    Point #{x: 1.0, y: 2.0}\n",
+            "import pkg.shapes.Point\n\nfn make() -> Point\n    Point #{x: 1.0, y: 2.0}\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -59,7 +59,7 @@ fn import_enum_type() {
         ),
         (
             "main.ax",
-            "use pkg.color.Color\n\nfn main()\n    let c: Color = 0\n",
+            "import pkg.color.Color\n\nfn main()\n    let c: Color = 0\n",
         ),
     ]);
     // This will produce a type error (i64 != Color), but no module/import errors.
@@ -83,7 +83,7 @@ fn grouped_import() {
         ),
         (
             "main.ax",
-            "use pkg.math.{add, sub}\n\nfn main()\n    add(1, 2)\n    sub(3, 1)\n",
+            "import pkg.math.{add, sub}\n\nfn main()\n    add(1, 2)\n    sub(3, 1)\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -99,11 +99,11 @@ fn circular_import_detected() {
     let output = compile_sources(&[
         (
             "a.ax",
-            "use pkg.b.bar\n\npub fn foo() -> i64\n    42\n",
+            "import pkg.b.bar\n\npub fn foo() -> i64\n    42\n",
         ),
         (
             "b.ax",
-            "use pkg.a.foo\n\npub fn bar() -> i64\n    42\n",
+            "import pkg.a.foo\n\npub fn bar() -> i64\n    42\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -127,7 +127,7 @@ fn private_not_importable() {
         ),
         (
             "main.ax",
-            "use pkg.math.secret\n\nfn main()\n    secret()\n",
+            "import pkg.math.secret\n\nfn main()\n    secret()\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -146,7 +146,7 @@ fn unresolved_module() {
     let output = compile_sources(&[
         (
             "main.ax",
-            "use pkg.nonexistent.foo\n\nfn main()\n    foo()\n",
+            "import pkg.nonexistent.foo\n\nfn main()\n    foo()\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -169,7 +169,7 @@ fn unresolved_name() {
         ),
         (
             "main.ax",
-            "use pkg.math.multiply\n\nfn main()\n    multiply(1, 2)\n",
+            "import pkg.math.multiply\n\nfn main()\n    multiply(1, 2)\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -192,7 +192,7 @@ fn cross_file_type_check() {
         ),
         (
             "main.ax",
-            "use pkg.math.add\n\nfn main()\n    let result: i64 = add(1, 2)\n    result\n",
+            "import pkg.math.add\n\nfn main()\n    let result: i64 = add(1, 2)\n    result\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -212,11 +212,11 @@ fn multi_level_import() {
         ),
         (
             "mid.ax",
-            "use pkg.core.base\n\npub fn middle() -> i64\n    base()\n",
+            "import pkg.core.base\n\npub fn middle() -> i64\n    base()\n",
         ),
         (
             "main.ax",
-            "use pkg.mid.middle\n\nfn main()\n    middle()\n",
+            "import pkg.mid.middle\n\nfn main()\n    middle()\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -233,7 +233,7 @@ fn cross_file_with_prelude_string() {
         ("util.ax", "pub fn greet() -> String\n    \"hello\"\n"),
         (
             "main.ax",
-            "use pkg.util.greet\n\nfn main()\n    let s: String = greet()\n",
+            "import pkg.util.greet\n\nfn main()\n    let s: String = greet()\n",
         ),
     ]);
     let errs = errors(&output.diagnostics);
@@ -248,7 +248,7 @@ fn cross_file_with_prelude_string() {
 fn std_import_math_min() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.math.min\n\nfn main() -> i64\n    min[i64](1, 2)\n",
+        "import std.math.min\n\nfn main() -> i64\n    min[i64](1, 2)\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
@@ -262,7 +262,7 @@ fn std_import_math_min() {
 fn std_import_option() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.option.Option\n\nfn main()\n    let x: Option[i64] = None\n",
+        "import std.option.Option\n\nfn main()\n    let x: Option[i64] = None\n",
     )]);
     let module_errors: Vec<_> = errors(&output.diagnostics)
         .into_iter()
@@ -279,7 +279,7 @@ fn std_import_option() {
 fn std_import_grouped() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.math.{min, max}\n\nfn main() -> i64\n    min[i64](1, max[i64](2, 3))\n",
+        "import std.math.{min, max}\n\nfn main() -> i64\n    min[i64](1, max[i64](2, 3))\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
@@ -293,7 +293,7 @@ fn std_import_grouped() {
 fn std_import_nonexistent_symbol() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.math.nonexistent\n\nfn main()\n    nonexistent()\n",
+        "import std.math.nonexistent\n\nfn main()\n    nonexistent()\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(
@@ -310,7 +310,7 @@ fn std_import_nonexistent_symbol() {
 fn std_import_nonexistent_module() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.nonexistent.foo\n\nfn main()\n    foo()\n",
+        "import std.nonexistent.foo\n\nfn main()\n    foo()\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(
@@ -327,7 +327,7 @@ fn std_import_nonexistent_module() {
 fn std_import_collection_hashmap() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.collection.HashMap\n\nfn main()\n    let m = HashMap[i64, i64].new()\n",
+        "import std.collection.HashMap\n\nfn main()\n    let m = HashMap[i64, i64].new()\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
@@ -337,7 +337,7 @@ fn std_import_collection_hashmap() {
 fn std_import_collection_grouped() {
     let output = compile_sources_with_prelude(&[(
         "main.ax",
-        "use std.collection.{HashMap, HashSet}\n\nfn main()\n    let m = HashMap[i64, i64].new()\n    let s = HashSet[i64].new()\n",
+        "import std.collection.{HashMap, HashSet}\n\nfn main()\n    let m = HashMap[i64, i64].new()\n    let s = HashSet[i64].new()\n",
     )]);
     let errs = errors(&output.diagnostics);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
