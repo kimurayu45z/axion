@@ -95,7 +95,8 @@ pub fn compile_expr<'ctx>(
         ExprKind::SizeOf(type_expr) => compile_sizeof(ctx, type_expr),
         ExprKind::MapLit(_) | ExprKind::SetLit(_) => None,
         ExprKind::Handle { expr: inner, .. } => compile_expr(ctx, inner),
-        ExprKind::Try(_) | ExprKind::Await(_) => None,
+        ExprKind::Try(_) => None,
+        ExprKind::Await(inner) => compile_expr(ctx, inner),
     }
 }
 

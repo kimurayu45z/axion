@@ -28,14 +28,14 @@ Axion（アクシオン）は、LLM による自動コード生成を第一級�
 
 ### 1.2 Keywords（予約語）
 
-以下の 38 語を予約語とする。拡張予約語は存在しない。
+以下の 39 語を予約語とする。拡張予約語は存在しない。
 
 ```
 fn  let  mut  move  type  struct  enum  interface  impl
 match  if  else  while  for  in  return  break  continue
 import  export  mod  pkg  pub  self  Self  true  false
-with  allow  where  as  const  dim  dyn  extern  handle
-assert  test  sizeof
+with  allow  await  where  as  const  dim  dyn  extern
+handle  assert  test  sizeof
 ```
 
 ### 1.3 Identifiers

@@ -1237,16 +1237,14 @@ impl Parser {
             if self.check(&TokenKind::Dot) {
                 self.advance();
                 // Check for `.await` postfix
-                if let Some(TokenKind::Ident(ref s)) = self.peek_kind() {
-                    if s == "await" {
-                        self.advance();
-                        let span = expr.span.merge(self.prev_span());
-                        expr = Expr {
-                            kind: ExprKind::Await(Box::new(expr)),
-                            span,
-                        };
-                        continue;
-                    }
+                if self.check(&TokenKind::Await) {
+                    self.advance();
+                    let span = expr.span.merge(self.prev_span());
+                    expr = Expr {
+                        kind: ExprKind::Await(Box::new(expr)),
+                        span,
+                    };
+                    continue;
                 }
                 let name = self.expect_any_ident()?;
                 let span = expr.span.merge(self.prev_span());

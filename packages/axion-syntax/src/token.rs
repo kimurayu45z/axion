@@ -50,6 +50,7 @@ pub enum TokenKind {
     Impl,
     SizeOf,
     Allow,
+    Await,
 
     // --- Identifiers ---
     /// Value/function/variable identifier: [a-z_][a-z0-9_]*
@@ -170,6 +171,7 @@ impl TokenKind {
             "impl" => Some(TokenKind::Impl),
             "sizeof" => Some(TokenKind::SizeOf),
             "allow" => Some(TokenKind::Allow),
+            "await" => Some(TokenKind::Await),
             _ => None,
         }
     }

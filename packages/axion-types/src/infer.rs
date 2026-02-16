@@ -15,6 +15,7 @@ use crate::unify::UnifyContext;
 pub const EFFECT_IO: &str = "IO";
 pub const EFFECT_ALLOC: &str = "Alloc";
 pub const EFFECT_UNSAFE: &str = "Unsafe";
+pub const EFFECT_ASYNC: &str = "Async";
 
 /// The inference context for type-checking a single function body.
 pub(crate) struct InferCtx<'a> {
@@ -102,7 +103,7 @@ impl<'a> InferCtx<'a> {
                 self.infer_expr(inner)
             }
             ExprKind::Await(inner) => {
-                // Deferred — just infer inner.
+                self.require_effect(EFFECT_ASYNC, "await", expr.span);
                 self.infer_expr(inner)
             }
             ExprKind::Ref(inner) => {
