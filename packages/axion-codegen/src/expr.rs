@@ -609,6 +609,19 @@ fn compile_binop<'ctx>(
         }
     }
 
+    // Array[u8] comparison — same struct layout as String, reuse bytes compare.
+    if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+        if is_array_struct_ty(ctx, &lhs_ty) {
+            let rhs_ty = get_expr_ty(ctx, rhs);
+            if is_array_struct_ty(ctx, &rhs_ty) {
+                let elem_ty = get_array_elem_ty(&lhs_ty);
+                if matches!(elem_ty, Ty::Prim(PrimTy::U8)) {
+                    return compile_bytes_compare(ctx, op, lhs_val, rhs_val, true, true);
+                }
+            }
+        }
+    }
+
     if is_float {
         compile_float_binop(ctx, op, lhs_val, rhs_val)
     } else {
@@ -1060,6 +1073,17 @@ fn compile_call<'ctx>(
                         bits.into_int_value(), i64_ty, "hash_ext"
                     ).unwrap();
                     return Some(extended.into());
+                }
+            }
+            // Array[u8] hash() built-in — DJB2 on raw bytes.
+            if is_array_struct_ty(ctx, &inner_ty) {
+                let elem_ty = get_array_elem_ty(&inner_ty);
+                if matches!(elem_ty, Ty::Prim(PrimTy::U8)) {
+                    let val = compile_expr(ctx, inner)?;
+                    let sv = val.into_struct_value();
+                    let ptr = ctx.builder.build_extract_value(sv, 0, "arr_ptr").unwrap().into_pointer_value();
+                    let len = ctx.builder.build_extract_value(sv, 1, "arr_len").unwrap().into_int_value();
+                    return compile_djb2_hash(ctx, ptr, len);
                 }
             }
         }
@@ -3705,6 +3729,15 @@ fn compile_str_trim<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<Ba
 fn compile_str_hash<'ctx>(ctx: &mut CodegenCtx<'ctx>, inner: &Expr) -> Option<BasicValueEnum<'ctx>> {
     let val = compile_expr(ctx, inner)?;
     let (ptr, len) = extract_str_parts(ctx, val);
+    compile_djb2_hash(ctx, ptr, len)
+}
+
+/// DJB2 hash on a byte buffer: h = 5381; for byte in bytes: h = h*33 + byte.
+fn compile_djb2_hash<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    len: inkwell::values::IntValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
     let i64_ty = ctx.context.i64_type();
     let i8_ty = ctx.context.i8_type();
 

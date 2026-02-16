@@ -508,6 +508,10 @@ impl<'a> InferCtx<'a> {
                 }
                 _ => {}
             }
+            // Array hash() built-in
+            if self.is_array_type(&resolved) {
+                return Ty::Fn { params: vec![], ret: Box::new(Ty::Prim(PrimTy::U64)) };
+            }
         }
 
         // str built-in methods
@@ -1344,6 +1348,33 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    fn is_array_type(&self, ty: &Ty) -> bool {
+        if let Ty::Struct { def_id, .. } = ty {
+            self.resolved.symbols.iter()
+                .any(|s| s.def_id == *def_id && s.name == "Array" && matches!(s.kind, SymbolKind::Struct))
+        } else {
+            false
+        }
+    }
+
+    /// Check if `concrete_ty` is `Array[T]` where all type args satisfy `iface_def_id`.
+    fn check_array_bound_propagation(&self, concrete_ty: &Ty, iface_def_id: DefId) -> bool {
+        if let Ty::Struct { def_id, type_args } = concrete_ty {
+            let is_array = self.resolved.symbols.iter()
+                .any(|s| s.def_id == *def_id && s.name == "Array" && matches!(s.kind, SymbolKind::Struct));
+            if is_array && !type_args.is_empty() {
+                return type_args.iter().all(|arg| {
+                    if let Some(impl_tys) = self.env.interface_impls.get(&iface_def_id) {
+                        impl_tys.contains(arg)
+                    } else {
+                        false
+                    }
+                });
+            }
+        }
+        false
+    }
+
     fn is_range_struct(&self, ty: &Ty) -> bool {
         if let Ty::Struct { def_id, .. } = ty {
             self.resolved.symbols.iter()
@@ -1974,7 +2005,9 @@ impl<'a> InferCtx<'a> {
             if required_methods.is_empty() {
                 // Marker interface: check interface_impls registry.
                 if let Some(impl_tys) = self.env.interface_impls.get(iface_def_id) {
-                    if !impl_tys.contains(concrete_ty) {
+                    if !impl_tys.contains(concrete_ty)
+                        && !self.check_array_bound_propagation(concrete_ty, *iface_def_id)
+                    {
                         self.diagnostics.push(errors::unsatisfied_bound(
                             concrete_ty,
                             &iface_name,
@@ -1993,6 +2026,10 @@ impl<'a> InferCtx<'a> {
                 if impl_tys.contains(concrete_ty) {
                     continue;
                 }
+            }
+            // Array[T] propagation: if all type args satisfy the interface, Array does too.
+            if self.check_array_bound_propagation(concrete_ty, *iface_def_id) {
+                continue;
             }
 
             // For each required method, check that the concrete type has it.
