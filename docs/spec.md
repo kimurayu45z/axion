@@ -28,13 +28,14 @@ Axion（アクシオン）は、LLM による自動コード生成を第一級�
 
 ### 1.2 Keywords（予約語）
 
-以下の 35 語のみを予約語とする。拡張予約語は存在しない。
+以下の 38 語を予約語とする。拡張予約語は存在しない。
 
 ```
-fn  let  mut  move  type  struct  enum  interface
+fn  let  mut  move  type  struct  enum  interface  impl
 match  if  else  while  for  in  return  break  continue
-use  mod  pkg  pub  self  Self  true  false  with
-where  as  const  dim  dyn  extern  handle  assert  test
+import  export  mod  pkg  pub  self  Self  true  false
+with  allow  where  as  const  dim  dyn  extern  handle
+assert  test  sizeof
 ```
 
 ### 1.3 Identifiers
@@ -158,13 +159,19 @@ let nested = `a: {foo(x, y)}`        // 関数呼び出しも可
 
 補間式で使用可能な型：
 
-| 型 | フォーマット | 例 |
-| -- | ---------- | --- |
-| `str` / `String` | 長さ付き文字列 | `` `hello {s}` `` |
-| 整数型（`i64`, `i32`, `u64`, `u32`, `usize`） | 整数表示 | `` `n={x}` `` |
-| `f64`, `f32` | 浮動小数点表示 | `` `pi={3.14}` `` |
-| `bool` | `"true"` / `"false"` | `` `flag={b}` `` |
-| `char` | 文字表示 | `` `ch={c}` `` |
+- `str` / `String` → そのまま埋め込み
+- **それ以外の型** → `.display()` メソッド（`Display` インターフェース）で `String` に変換
+
+`Display` インターフェースはすべてのプリミティブ型にビルトイン実装されている：
+
+| 型 | フォーマット |
+| -- | ---------- |
+| `i8`–`i128`, `isize` | 符号付き整数表示 |
+| `u8`–`u128`, `usize` | 符号なし整数表示 |
+| `f32`, `f64` | 浮動小数点表示 |
+| `bool` | `"true"` / `"false"` |
+| `str` | `String` へのコピー |
+| `String` | そのまま返す |
 
 テンプレートリテラルの結果は常に `String` 型を返す。
 
@@ -363,11 +370,19 @@ fn User.from_json(json: Json) -> Result[Self, ParseError]
 interface Hashable
     fn hash() -> u64
 
-interface Printable
-    fn to_string() -> String
+interface Display
+    fn display(self) -> String
 ```
 
 型が interface を満たすかは**構造的に判定**される（Go と同様）。明示的な宣言は不要。
+
+**ビルトインインターフェース：**
+
+| Interface | メソッド | ビルトイン実装 |
+|-----------|---------|-------------|
+| `Display` | `fn display(self) -> String` | すべてのプリミティブ型、`String` |
+| `Ord` | `fn cmp(self, other: Self) -> Ordering` | 整数型、浮動小数点型 |
+| `Hash` | `fn hash(self) -> u64` | 整数型、`bool`、`str`、`String` |
 
 ```
 // User は hash() -> u64 を持つので、自動的に Hashable を満たす
@@ -811,7 +826,25 @@ fn fetch_and_store(url: &str) -> Result[{}, AppError] with IO, Async
     fs.write("cache.json", data.to_json())
 ```
 
-### 4.4 Effect Propagation（エフェクト伝播）
+### 4.4 Effect Absorption（エフェクト吸収）
+
+`allow` 節で宣言されたエフェクトは関数内部でのみ有効で、呼び出し元には伝播しない。内部実装で `Unsafe` を使うが外部に安全な API を提供する場合に使う。
+
+```
+// write は with Unsafe, IO を持つが、print は Unsafe を吸収して IO のみ伝播
+pub fn print(s: str) with IO allow Unsafe
+    write(1, s.as_ptr() as Ptr[{}], s.len())
+
+// すべてのエフェクトを吸収（呼び出し元はエフェクト宣言不要）
+pub fn log_print(s: str) allow Unsafe, IO
+    write(2, s.as_ptr() as Ptr[{}], s.len())
+```
+
+- `with` のエフェクト → 呼び出し元に伝播する（従来通り）
+- `allow` のエフェクト → 関数内部でのみ有効、呼び出し元に伝播しない
+- `allow` は `with` なしでも使える
+
+### 4.5 Effect Propagation（エフェクト伝播）
 
 ```
 // エフェクトは呼び出し元に自動伝播する
@@ -824,7 +857,7 @@ fn bad_pure(x: i64) -> i64
     x + 1
 ```
 
-### 4.5 Effect Handlers（エフェクトハンドラ）
+### 4.6 Effect Handlers（エフェクトハンドラ）
 
 テスト時にエフェクトをモックに差し替え可能：
 
@@ -1694,11 +1727,12 @@ top_level_item = function_def | method_def | constructor_def
 
 // 通常の関数
 function_def   = ["pub"] "fn" IDENT type_params? "(" params ")"
-                 ["->" type] [effect_clause] NEWLINE INDENT body DEDENT ;
+                 ["->" type] [effect_clause] [allow_clause]
+                 NEWLINE INDENT body DEDENT ;
 
 // インスタンスメソッド: fn@[mut Type] name[T: Bound](params) -> Return
 method_def     = ["pub"] "fn" "@" "[" receiver "]" IDENT type_params?
-                 "(" params ")" ["->" type] [effect_clause]
+                 "(" params ")" ["->" type] [effect_clause] [allow_clause]
                  NEWLINE INDENT body DEDENT ;
 receiver       = [ "mut" | "move" ] type ;
 
@@ -1712,6 +1746,7 @@ param          = param_modifier IDENT ":" type ;
 param_modifier = [ "move" ] [ "mut" ] ;
 
 effect_clause  = "with" effect { "," effect } ;
+allow_clause   = "allow" effect { "," effect } ;
 effect         = TYPE_IDENT [type_args] ;
 
 type           = primitive_type
