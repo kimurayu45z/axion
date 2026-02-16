@@ -1,1 +1,7 @@
+pub enum Ordering
+    Less
+    Equal
+    Greater
+
 pub interface Ord
+    fn cmp(self, other: Self) -> Ordering

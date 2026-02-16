@@ -1088,6 +1088,14 @@ fn compile_call<'ctx>(
             }
         }
 
+        // cmp() built-in for Ord types — returns Ordering enum { i8 }.
+        if field_name == "cmp" && !args.is_empty() {
+            let result = compile_builtin_cmp(ctx, inner, &inner_ty, args);
+            if result.is_some() {
+                return result;
+            }
+        }
+
         // str built-in method calls
         if let Ty::Prim(PrimTy::Str) = inner_ty {
             match field_name.as_str() {
@@ -3778,6 +3786,119 @@ fn compile_djb2_hash<'ctx>(
     // Loop end: return h
     ctx.builder.position_at_end(loop_end);
     Some(phi_h.as_basic_value())
+}
+
+/// Build an Ordering enum value: { i8(tag) } where Less=0, Equal=1, Greater=2.
+fn build_ordering_value<'ctx>(
+    ctx: &CodegenCtx<'ctx>,
+    tag: u64,
+) -> BasicValueEnum<'ctx> {
+    let ordering_ty = ctx.context.struct_type(&[ctx.context.i8_type().into()], false);
+    let val = ctx.builder.build_insert_value(
+        ordering_ty.const_zero(),
+        ctx.context.i8_type().const_int(tag, false),
+        0,
+        "ordering_tag",
+    ).unwrap().into_struct_value();
+    val.into()
+}
+
+/// Build Ordering from a condition pair: (is_less, is_equal) → Less/Equal/Greater.
+fn build_ordering_from_cmp<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    is_less: inkwell::values::IntValue<'ctx>,
+    is_equal: inkwell::values::IntValue<'ctx>,
+) -> BasicValueEnum<'ctx> {
+    // tag = is_less ? 0 : (is_equal ? 1 : 2)
+    let i8_ty = ctx.context.i8_type();
+    let tag_eq_or_gt = ctx.builder.build_select(
+        is_equal, i8_ty.const_int(1, false), i8_ty.const_int(2, false), "eq_or_gt"
+    ).unwrap().into_int_value();
+    let tag = ctx.builder.build_select(
+        is_less, i8_ty.const_int(0, false), tag_eq_or_gt, "cmp_tag"
+    ).unwrap().into_int_value();
+
+    let ordering_ty = ctx.context.struct_type(&[i8_ty.into()], false);
+    let val = ctx.builder.build_insert_value(
+        ordering_ty.const_zero(), tag, 0, "ordering",
+    ).unwrap().into_struct_value();
+    val.into()
+}
+
+/// Compile built-in cmp() for Ord types. Returns Ordering enum.
+fn compile_builtin_cmp<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    inner: &Expr,
+    inner_ty: &Ty,
+    args: &[CallArg],
+) -> Option<BasicValueEnum<'ctx>> {
+    let lhs_val = compile_expr(ctx, inner)?;
+    let rhs_val = compile_expr(ctx, &args[0].expr)?;
+
+    match inner_ty {
+        Ty::Prim(p) if p.is_integer() || *p == PrimTy::Bool || *p == PrimTy::Usize || *p == PrimTy::Isize => {
+            let lhs = lhs_val.into_int_value();
+            let rhs = rhs_val.into_int_value();
+            let is_signed = p.is_signed();
+            let lt_pred = if is_signed { IntPredicate::SLT } else { IntPredicate::ULT };
+            let is_less = ctx.builder.build_int_compare(lt_pred, lhs, rhs, "cmp_lt").unwrap();
+            let is_equal = ctx.builder.build_int_compare(IntPredicate::EQ, lhs, rhs, "cmp_eq").unwrap();
+            Some(build_ordering_from_cmp(ctx, is_less, is_equal))
+        }
+        Ty::Prim(p) if p.is_float() => {
+            let lhs = lhs_val.into_float_value();
+            let rhs = rhs_val.into_float_value();
+            let is_less = ctx.builder.build_float_compare(FloatPredicate::OLT, lhs, rhs, "cmp_lt").unwrap();
+            let is_equal = ctx.builder.build_float_compare(FloatPredicate::OEQ, lhs, rhs, "cmp_eq").unwrap();
+            Some(build_ordering_from_cmp(ctx, is_less, is_equal))
+        }
+        Ty::Prim(PrimTy::Str) => {
+            compile_bytes_cmp(ctx, lhs_val, rhs_val, false, false)
+        }
+        _ => {
+            // String or Array[u8]
+            let is_string = get_type_name_for_method_ctx(ctx, inner_ty).map_or(false, |n| n == "String");
+            let is_array_u8 = is_array_struct_ty(ctx, inner_ty)
+                && matches!(get_array_elem_ty(inner_ty), Ty::Prim(PrimTy::U8));
+            if is_string || is_array_u8 {
+                compile_bytes_cmp(ctx, lhs_val, rhs_val, true, true)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Compile cmp() for byte-comparable types (str, String, Array[u8]).
+/// Returns Ordering enum based on memcmp.
+fn compile_bytes_cmp<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    lhs_val: BasicValueEnum<'ctx>,
+    rhs_val: BasicValueEnum<'ctx>,
+    lhs_is_string: bool,
+    rhs_is_string: bool,
+) -> Option<BasicValueEnum<'ctx>> {
+    let memcmp = ctx.module.get_function("memcmp")?;
+    let (lhs_ptr, lhs_len) = extract_bytes_parts(ctx, lhs_val, lhs_is_string);
+    let (rhs_ptr, rhs_len) = extract_bytes_parts(ctx, rhs_val, rhs_is_string);
+    let zero_i32 = ctx.context.i32_type().const_zero();
+
+    // Lexicographic: memcmp(min_len), then compare lengths.
+    let lhs_shorter = ctx.builder.build_int_compare(IntPredicate::ULT, lhs_len, rhs_len, "lhs_shorter").unwrap();
+    let min_len = ctx.builder.build_select(lhs_shorter, lhs_len, rhs_len, "min_len").unwrap().into_int_value();
+    let cmp_result = ctx.builder.build_call(
+        memcmp, &[lhs_ptr.into(), rhs_ptr.into(), min_len.into()], "memcmp_ret",
+    ).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+    let cmp_is_zero = ctx.builder.build_int_compare(IntPredicate::EQ, cmp_result, zero_i32, "cmp_zero").unwrap();
+
+    let lhs_len_i32 = ctx.builder.build_int_truncate(lhs_len, ctx.context.i32_type(), "lhs_i32").unwrap();
+    let rhs_len_i32 = ctx.builder.build_int_truncate(rhs_len, ctx.context.i32_type(), "rhs_i32").unwrap();
+    let len_diff = ctx.builder.build_int_sub(lhs_len_i32, rhs_len_i32, "len_diff").unwrap();
+    let effective = ctx.builder.build_select(cmp_is_zero, len_diff, cmp_result, "effective").unwrap().into_int_value();
+
+    let is_less = ctx.builder.build_int_compare(IntPredicate::SLT, effective, zero_i32, "cmp_lt").unwrap();
+    let is_equal = ctx.builder.build_int_compare(IntPredicate::EQ, effective, zero_i32, "cmp_eq").unwrap();
+    Some(build_ordering_from_cmp(ctx, is_less, is_equal))
 }
 
 // ---------------------------------------------------------------------------

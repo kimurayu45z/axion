@@ -514,6 +514,25 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // Integer/bool/float/str/String/Array cmp() built-in
+        if name == "cmp" {
+            let is_ord_type = match &resolved {
+                Ty::Prim(p) => matches!(p,
+                    PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128 |
+                    PrimTy::U8 | PrimTy::U16 | PrimTy::U32 | PrimTy::U64 | PrimTy::U128 |
+                    PrimTy::Isize | PrimTy::Usize | PrimTy::Bool |
+                    PrimTy::F16 | PrimTy::F32 | PrimTy::F64 | PrimTy::Bf16 |
+                    PrimTy::Str
+                ),
+                _ => self.is_string_type(&resolved) || self.is_array_type(&resolved),
+            };
+            if is_ord_type {
+                if let Some(ordering_ty) = self.get_ordering_enum_ty() {
+                    return Ty::Fn { params: vec![resolved.clone()], ret: Box::new(ordering_ty) };
+                }
+            }
+        }
+
         // str built-in methods
         if let Ty::Prim(PrimTy::Str) = resolved {
             match name {
@@ -1355,6 +1374,12 @@ impl<'a> InferCtx<'a> {
         } else {
             false
         }
+    }
+
+    fn get_ordering_enum_ty(&self) -> Option<Ty> {
+        self.resolved.symbols.iter()
+            .find(|s| s.name == "Ordering" && matches!(s.kind, SymbolKind::Enum))
+            .map(|s| Ty::Enum { def_id: s.def_id, type_args: vec![] })
     }
 
     /// Check if `concrete_ty` is `Array[T]` where all type args satisfy `iface_def_id`.
