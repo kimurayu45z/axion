@@ -88,6 +88,7 @@ pub struct FnDef {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<Effect>,
+    pub allowed_effects: Vec<Effect>,
     pub body: Vec<Stmt>,
 }
 
@@ -120,6 +121,7 @@ pub struct MethodDef {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<Effect>,
+    pub allowed_effects: Vec<Effect>,
     pub body: Vec<Stmt>,
 }
 

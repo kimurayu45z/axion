@@ -9,5 +9,6 @@ extern "C"
     fn fclose(file: Ptr[{}]) -> i32 with Unsafe, IO
     fn fread(buf: Ptr[{}], size: usize, count: usize, file: Ptr[{}]) -> usize with Unsafe, IO
     fn fwrite(buf: Ptr[{}], size: usize, count: usize, file: Ptr[{}]) -> usize with Unsafe, IO
+    fn write(fd: i32, buf: Ptr[{}], len: usize) -> isize with Unsafe, IO
     // TODO: __error() is macOS only. Linux: __errno_location(), Windows: _errno()
     fn __error() -> Ptr[i32] with Unsafe

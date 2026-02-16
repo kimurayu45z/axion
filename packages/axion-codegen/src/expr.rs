@@ -897,17 +897,9 @@ fn compile_call<'ctx>(
     func: &Expr,
     args: &[CallArg],
 ) -> Option<BasicValueEnum<'ctx>> {
-    // Check for built-in functions: println, print.
+    // Check for built-in functions.
     if let ExprKind::Ident(name) = &func.kind {
         match name.as_str() {
-            "println" => {
-                compile_println(ctx, args);
-                return None;
-            }
-            "print" => {
-                compile_print(ctx, args);
-                return None;
-            }
             "str_from_raw" => {
                 let ptr = compile_expr(ctx, &args[0].expr)?.into_pointer_value();
                 let len = compile_expr(ctx, &args[1].expr)?.into_int_value();
@@ -1091,6 +1083,14 @@ fn compile_call<'ctx>(
         // cmp() built-in for Ord types — returns Ordering enum { i8 }.
         if field_name == "cmp" && !args.is_empty() {
             let result = compile_builtin_cmp(ctx, inner, &inner_ty, args);
+            if result.is_some() {
+                return result;
+            }
+        }
+
+        // display() built-in for Display types — returns String { ptr, len, cap }.
+        if field_name == "display" {
+            let result = compile_display_builtin(ctx, inner, &inner_ty);
             if result.is_some() {
                 return result;
             }
@@ -1973,165 +1973,6 @@ fn collect_captures_expr<'ctx>(
             }
         }
         _ => {}
-    }
-}
-
-fn compile_println<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
-    if args.is_empty() {
-        build_printf_call(ctx, "\n", &[]);
-        return;
-    }
-
-    let arg = &args[0];
-    let arg_ty = get_expr_ty(ctx, &arg.expr);
-
-    match &arg_ty {
-        Ty::Prim(PrimTy::Str) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                // Extract ptr and len from {ptr, i64} struct.
-                let str_struct = val.into_struct_value();
-                let ptr = ctx
-                    .builder
-                    .build_extract_value(str_struct, 0, "str_ptr")
-                    .unwrap();
-                let len = ctx
-                    .builder
-                    .build_extract_value(str_struct, 1, "str_len")
-                    .unwrap();
-                build_printf_call(ctx, "%.*s\n", &[len.into(), ptr.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) | Ty::Prim(PrimTy::Isize) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%lld\n", &[val.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::Bool) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                // bool: print "true" or "false"
-                let bool_val = val.into_int_value();
-                let true_str = ctx
-                    .builder
-                    .build_global_string_ptr("true", "true_str")
-                    .unwrap();
-                let false_str = ctx
-                    .builder
-                    .build_global_string_ptr("false", "false_str")
-                    .unwrap();
-                let selected = ctx
-                    .builder
-                    .build_select(
-                        bool_val,
-                        true_str.as_pointer_value(),
-                        false_str.as_pointer_value(),
-                        "bool_str",
-                    )
-                    .unwrap();
-                build_printf_call(ctx, "%s\n", &[selected.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::F64) | Ty::Prim(PrimTy::F32) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%f\n", &[val.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::Char) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%c\n", &[val.into()]);
-            }
-        }
-        Ty::Struct { def_id, .. } => {
-            let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
-            if name == Some("String") {
-                if let Some(val) = compile_expr(ctx, &arg.expr) {
-                    let sv = val.into_struct_value();
-                    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap();
-                    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap();
-                    build_printf_call(ctx, "%.*s\n", &[len.into(), ptr.into()]);
-                }
-            }
-        }
-        _ => {
-            // Default: try as i64.
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%lld\n", &[val.into()]);
-            }
-        }
-    }
-}
-
-fn compile_print<'ctx>(ctx: &mut CodegenCtx<'ctx>, args: &[CallArg]) {
-    if args.is_empty() {
-        return;
-    }
-
-    let arg = &args[0];
-    let arg_ty = get_expr_ty(ctx, &arg.expr);
-
-    match &arg_ty {
-        Ty::Prim(PrimTy::Str) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                let str_struct = val.into_struct_value();
-                let ptr = ctx
-                    .builder
-                    .build_extract_value(str_struct, 0, "str_ptr")
-                    .unwrap();
-                let len = ctx
-                    .builder
-                    .build_extract_value(str_struct, 1, "str_len")
-                    .unwrap();
-                build_printf_call(ctx, "%.*s", &[len.into(), ptr.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::I64) | Ty::Prim(PrimTy::I32) | Ty::Prim(PrimTy::U64) | Ty::Prim(PrimTy::U32) | Ty::Prim(PrimTy::Usize) | Ty::Prim(PrimTy::Isize) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%lld", &[val.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::Bool) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                let bool_val = val.into_int_value();
-                let true_str = ctx
-                    .builder
-                    .build_global_string_ptr("true", "true_str")
-                    .unwrap();
-                let false_str = ctx
-                    .builder
-                    .build_global_string_ptr("false", "false_str")
-                    .unwrap();
-                let selected = ctx
-                    .builder
-                    .build_select(
-                        bool_val,
-                        true_str.as_pointer_value(),
-                        false_str.as_pointer_value(),
-                        "bool_str",
-                    )
-                    .unwrap();
-                build_printf_call(ctx, "%s", &[selected.into()]);
-            }
-        }
-        Ty::Prim(PrimTy::F64) | Ty::Prim(PrimTy::F32) => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%f", &[val.into()]);
-            }
-        }
-        Ty::Struct { def_id, .. } => {
-            let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
-            if name == Some("String") {
-                if let Some(val) = compile_expr(ctx, &arg.expr) {
-                    let sv = val.into_struct_value();
-                    let ptr = ctx.builder.build_extract_value(sv, 0, "str_ptr").unwrap();
-                    let len = ctx.builder.build_extract_value(sv, 1, "str_len").unwrap();
-                    build_printf_call(ctx, "%.*s", &[len.into(), ptr.into()]);
-                }
-            }
-        }
-        _ => {
-            if let Some(val) = compile_expr(ctx, &arg.expr) {
-                build_printf_call(ctx, "%lld", &[val.into()]);
-            }
-        }
     }
 }
 
@@ -3901,6 +3742,127 @@ fn compile_bytes_cmp<'ctx>(
     Some(build_ordering_from_cmp(ctx, is_less, is_equal))
 }
 
+/// Compile display() built-in — returns String { ptr, len, cap }.
+fn compile_display_builtin<'ctx>(
+    ctx: &mut CodegenCtx<'ctx>,
+    inner: &Expr,
+    inner_ty: &Ty,
+) -> Option<BasicValueEnum<'ctx>> {
+    let ptr_ty = ctx.context.ptr_type(inkwell::AddressSpace::default());
+    let i64_ty = ctx.context.i64_type();
+    let string_ty = ctx.context.struct_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+
+    match inner_ty {
+        Ty::Prim(p) if p.is_integer() || *p == PrimTy::Bool || *p == PrimTy::Usize || *p == PrimTy::Isize => {
+            if *p == PrimTy::Bool {
+                // Bool: select "true" / "false" and build String
+                let val = compile_expr(ctx, inner)?;
+                let bool_val = val.into_int_value();
+                let true_str = ctx.builder.build_global_string_ptr("true", "disp_true").unwrap();
+                let false_str = ctx.builder.build_global_string_ptr("false", "disp_false").unwrap();
+                let selected_ptr = ctx.builder.build_select(
+                    bool_val, true_str.as_pointer_value(), false_str.as_pointer_value(), "disp_bool_ptr",
+                ).unwrap().into_pointer_value();
+                let true_len = i64_ty.const_int(4, false);
+                let false_len = i64_ty.const_int(5, false);
+                let selected_len = ctx.builder.build_select(bool_val, true_len, false_len, "disp_bool_len")
+                    .unwrap().into_int_value();
+
+                // malloc + memcpy to own the buffer
+                let malloc = ctx.module.get_function("malloc")?;
+                let memcpy = ctx.module.get_function("memcpy")?;
+                let buf = ctx.builder.build_call(malloc, &[selected_len.into()], "disp_buf").unwrap()
+                    .try_as_basic_value().left()?.into_pointer_value();
+                ctx.builder.build_call(memcpy, &[buf.into(), selected_ptr.into(), selected_len.into()], "").unwrap();
+
+                let mut sv = string_ty.get_undef();
+                sv = ctx.builder.build_insert_value(sv, buf, 0, "s_ptr").unwrap().into_struct_value();
+                sv = ctx.builder.build_insert_value(sv, selected_len, 1, "s_len").unwrap().into_struct_value();
+                sv = ctx.builder.build_insert_value(sv, selected_len, 2, "s_cap").unwrap().into_struct_value();
+                return Some(sv.into());
+            }
+            // Integer: snprintf two-pass
+            let val = compile_expr(ctx, inner)?;
+            let snprintf = ctx.module.get_function("snprintf")?;
+            let malloc = ctx.module.get_function("malloc")?;
+            let fmt_str = if p.is_signed() { "%lld" } else { "%llu" };
+            let fmt_global = ctx.builder.build_global_string_ptr(fmt_str, "disp_int_fmt").unwrap();
+
+            // Widen to i64 for snprintf
+            let i64_val = ctx.builder.build_int_s_extend_or_bit_cast(
+                val.into_int_value(), i64_ty, "disp_ext"
+            ).unwrap();
+
+            let null_ptr = ptr_ty.const_null();
+            let zero = i64_ty.const_zero();
+            let len_i32 = ctx.builder.build_call(
+                snprintf, &[null_ptr.into(), zero.into(), fmt_global.as_pointer_value().into(), i64_val.into()], "disp_len",
+            ).unwrap().try_as_basic_value().left()?.into_int_value();
+            let len = ctx.builder.build_int_z_extend(len_i32, i64_ty, "disp_len64").unwrap();
+            let one = i64_ty.const_int(1, false);
+            let buf_size = ctx.builder.build_int_add(len, one, "disp_bufsz").unwrap();
+            let buf = ctx.builder.build_call(malloc, &[buf_size.into()], "disp_buf").unwrap()
+                .try_as_basic_value().left()?.into_pointer_value();
+            ctx.builder.build_call(
+                snprintf, &[buf.into(), buf_size.into(), fmt_global.as_pointer_value().into(), i64_val.into()], "",
+            ).unwrap();
+
+            let mut sv = string_ty.get_undef();
+            sv = ctx.builder.build_insert_value(sv, buf, 0, "s_ptr").unwrap().into_struct_value();
+            sv = ctx.builder.build_insert_value(sv, len, 1, "s_len").unwrap().into_struct_value();
+            sv = ctx.builder.build_insert_value(sv, buf_size, 2, "s_cap").unwrap().into_struct_value();
+            Some(sv.into())
+        }
+        Ty::Prim(p) if p.is_float() => {
+            let val = compile_expr(ctx, inner)?;
+            let snprintf = ctx.module.get_function("snprintf")?;
+            let malloc = ctx.module.get_function("malloc")?;
+            let fmt_global = ctx.builder.build_global_string_ptr("%g", "disp_float_fmt").unwrap();
+
+            // Promote f32/f16 to f64 for snprintf
+            let f64_ty = ctx.context.f64_type();
+            let f64_val = if *p == PrimTy::F64 {
+                val.into_float_value()
+            } else {
+                ctx.builder.build_float_ext(val.into_float_value(), f64_ty, "disp_fext").unwrap()
+            };
+
+            let null_ptr = ptr_ty.const_null();
+            let zero = i64_ty.const_zero();
+            let len_i32 = ctx.builder.build_call(
+                snprintf, &[null_ptr.into(), zero.into(), fmt_global.as_pointer_value().into(), f64_val.into()], "disp_len",
+            ).unwrap().try_as_basic_value().left()?.into_int_value();
+            let len = ctx.builder.build_int_z_extend(len_i32, i64_ty, "disp_len64").unwrap();
+            let one = i64_ty.const_int(1, false);
+            let buf_size = ctx.builder.build_int_add(len, one, "disp_bufsz").unwrap();
+            let buf = ctx.builder.build_call(malloc, &[buf_size.into()], "disp_buf").unwrap()
+                .try_as_basic_value().left()?.into_pointer_value();
+            ctx.builder.build_call(
+                snprintf, &[buf.into(), buf_size.into(), fmt_global.as_pointer_value().into(), f64_val.into()], "",
+            ).unwrap();
+
+            let mut sv = string_ty.get_undef();
+            sv = ctx.builder.build_insert_value(sv, buf, 0, "s_ptr").unwrap().into_struct_value();
+            sv = ctx.builder.build_insert_value(sv, len, 1, "s_len").unwrap().into_struct_value();
+            sv = ctx.builder.build_insert_value(sv, buf_size, 2, "s_cap").unwrap().into_struct_value();
+            Some(sv.into())
+        }
+        Ty::Prim(PrimTy::Str) => {
+            // str → String: copy to heap (same as to_string)
+            compile_str_to_string(ctx, inner)
+        }
+        _ => {
+            // String: return self as-is
+            let is_string = get_type_name_for_method_ctx(ctx, inner_ty).map_or(false, |n| n == "String");
+            if is_string {
+                compile_expr(ctx, inner)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // String new intrinsic methods (byte_at, contains, starts_with, ends_with,
 // substring, clear, repeat, trim, trim_start, trim_end)
@@ -3954,96 +3916,24 @@ fn compile_string_interp<'ctx>(
             }
             StringInterpPart::Expr(expr) => {
                 let expr_ty = get_expr_ty(ctx, expr);
-                let val = compile_expr(ctx, expr);
-                match &expr_ty {
-                    Ty::Prim(PrimTy::Str) => {
-                        fmt.push_str("%.*s");
-                        if let Some(v) = val {
-                            let str_struct = v.into_struct_value();
-                            let len = ctx
-                                .builder
-                                .build_extract_value(str_struct, 1, "interp_len")
-                                .unwrap();
-                            let ptr = ctx
-                                .builder
-                                .build_extract_value(str_struct, 0, "interp_ptr")
-                                .unwrap();
-                            args.push(len.into());
-                            args.push(ptr.into());
-                        }
-                    }
-                    Ty::Prim(PrimTy::I64)
-                    | Ty::Prim(PrimTy::I32)
-                    | Ty::Prim(PrimTy::U64)
-                    | Ty::Prim(PrimTy::U32)
-                    | Ty::Prim(PrimTy::Usize)
-                    | Ty::Prim(PrimTy::Isize) => {
-                        fmt.push_str("%lld");
-                        if let Some(v) = val {
-                            args.push(v.into());
-                        }
-                    }
-                    Ty::Prim(PrimTy::Bool) => {
-                        // Bool: format as "true"/"false" using %s with select.
-                        fmt.push_str("%s");
-                        if let Some(v) = val {
-                            let bool_val = v.into_int_value();
-                            let true_str = ctx
-                                .builder
-                                .build_global_string_ptr("true", "true_s")
-                                .unwrap();
-                            let false_str = ctx
-                                .builder
-                                .build_global_string_ptr("false", "false_s")
-                                .unwrap();
-                            let selected = ctx
-                                .builder
-                                .build_select(
-                                    bool_val,
-                                    true_str.as_pointer_value(),
-                                    false_str.as_pointer_value(),
-                                    "bool_s",
-                                )
-                                .unwrap();
-                            args.push(selected.into());
-                        }
-                    }
-                    Ty::Prim(PrimTy::F64) | Ty::Prim(PrimTy::F32) => {
-                        fmt.push_str("%f");
-                        if let Some(v) = val {
-                            args.push(v.into());
-                        }
-                    }
-                    Ty::Prim(PrimTy::Char) => {
-                        fmt.push_str("%c");
-                        if let Some(v) = val {
-                            args.push(v.into());
-                        }
-                    }
-                    Ty::Struct { def_id, .. } => {
-                        let name = ctx.resolved.symbols.iter().find(|s| s.def_id == *def_id).map(|s| s.name.as_str());
-                        if name == Some("String") {
-                            fmt.push_str("%.*s");
-                            if let Some(v) = val {
-                                let sv = v.into_struct_value();
-                                let len = ctx.builder.build_extract_value(sv, 1, "interp_len").unwrap();
-                                let ptr = ctx.builder.build_extract_value(sv, 0, "interp_ptr").unwrap();
-                                args.push(len.into());
-                                args.push(ptr.into());
-                            }
-                        } else {
-                            fmt.push_str("%lld");
-                            if let Some(v) = val {
-                                args.push(v.into());
-                            }
-                        }
-                    }
-                    _ => {
-                        fmt.push_str("%lld");
-                        if let Some(v) = val {
-                            args.push(v.into());
-                        }
-                    }
+                let is_str = matches!(&expr_ty, Ty::Prim(PrimTy::Str));
+                let is_string = matches!(&expr_ty, Ty::Struct { def_id, .. }
+                    if ctx.resolved.symbols.iter().any(|s| s.def_id == *def_id && s.name == "String"));
+
+                // All interpolated values become %.*s (ptr + len).
+                // str/String use their ptr/len directly; others go through .display().
+                fmt.push_str("%.*s");
+                let string_val = if is_str || is_string {
+                    compile_expr(ctx, expr)
+                } else {
+                    compile_display_builtin(ctx, expr, &expr_ty)
+                };
+                if let Some(v) = string_val {
+                    let sv = v.into_struct_value();
+                    let len = ctx.builder.build_extract_value(sv, 1, "interp_len").unwrap();
+                    let ptr = ctx.builder.build_extract_value(sv, 0, "interp_ptr").unwrap();
+                    args.push(len.into());
+                    args.push(ptr.into());
                 }
             }
         }

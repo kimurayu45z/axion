@@ -533,6 +533,24 @@ impl<'a> InferCtx<'a> {
             }
         }
 
+        // display() built-in for all Display types
+        if name == "display" {
+            let is_display_type = match &resolved {
+                Ty::Prim(p) => matches!(p,
+                    PrimTy::I8 | PrimTy::I16 | PrimTy::I32 | PrimTy::I64 | PrimTy::I128 |
+                    PrimTy::U8 | PrimTy::U16 | PrimTy::U32 | PrimTy::U64 | PrimTy::U128 |
+                    PrimTy::Isize | PrimTy::Usize | PrimTy::Bool |
+                    PrimTy::F16 | PrimTy::F32 | PrimTy::F64 | PrimTy::Bf16 |
+                    PrimTy::Str
+                ),
+                _ => self.is_string_type(&resolved),
+            };
+            if is_display_type {
+                let string_ty = self.get_string_struct_ty().unwrap_or(Ty::Error);
+                return Ty::Fn { params: vec![], ret: Box::new(string_ty) };
+            }
+        }
+
         // str built-in methods
         if let Ty::Prim(PrimTy::Str) = resolved {
             match name {

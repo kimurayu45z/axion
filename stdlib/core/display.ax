@@ -1,0 +1,4 @@
+import string.*
+
+pub interface Display
+    fn display(self) -> String

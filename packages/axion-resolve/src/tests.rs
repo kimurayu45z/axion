@@ -38,11 +38,11 @@ fn builtins_primitive_types_registered() {
 }
 
 #[test]
-fn builtins_prelude_functions() {
+fn builtins_println_not_builtin() {
     let src = "fn main()\n    println(42)\n";
     let (_, diags) = resolve_source(src);
-    // `println` should be recognized without error.
-    assert!(errors(&diags).is_empty(), "errors: {diags:?}");
+    // `println` is no longer a built-in; it requires `use std.io.*`.
+    assert!(!errors(&diags).is_empty(), "expected unresolved error for println");
 }
 
 // -----------------------------------------------------------------------

@@ -35,6 +35,8 @@ pub struct TypeEnv {
     pub receiver_modifiers: HashMap<DefId, ReceiverModifier>,
     /// Function/Method DefId → list of effect names.
     pub fn_effects: HashMap<DefId, Vec<String>>,
+    /// Function/Method DefId → list of allowed (absorbed) effect names.
+    pub fn_allowed_effects: HashMap<DefId, Vec<String>>,
     /// Interface DefId → list of concrete types that implement it.
     pub interface_impls: HashMap<DefId, Vec<Ty>>,
 }
@@ -134,6 +136,21 @@ impl TypeEnv {
             }
             self.interface_impls.insert(hash_sym.def_id, hash_tys);
         }
+
+        // Display = all numerics + str + String + bool
+        if let Some(display_sym) = symbols.iter().find(|s| s.name == "Display" && s.kind == SymbolKind::Interface) {
+            let mut display_tys: Vec<Ty> = signed.iter()
+                .chain(unsigned.iter())
+                .chain(floats.iter())
+                .map(|p| Ty::Prim(*p))
+                .collect();
+            display_tys.push(Ty::Prim(PrimTy::Str));
+            display_tys.push(Ty::Prim(PrimTy::Bool));
+            if let Some(string_sym) = symbols.iter().find(|s| s.name == "String" && s.kind == SymbolKind::Struct) {
+                display_tys.push(Ty::Struct { def_id: string_sym.def_id, type_args: vec![] });
+            }
+            self.interface_impls.insert(display_sym.def_id, display_tys);
+        }
     }
 
     /// Build the type environment from AST + resolve output.
@@ -152,23 +169,12 @@ impl TypeEnv {
             param_modifiers: HashMap::new(),
             receiver_modifiers: HashMap::new(),
             fn_effects: HashMap::new(),
+            fn_allowed_effects: HashMap::new(),
             interface_impls: HashMap::new(),
         };
 
         let symbols = &resolved.symbols;
         let resolutions = &resolved.resolutions;
-
-        // Register built-in functions (print, println) with a generic Fn signature.
-        for sym in symbols {
-            if sym.kind == SymbolKind::Function && sym.span == Span::dummy() {
-                // Built-in functions: accept any args, return Unit.
-                let ty = Ty::Fn {
-                    params: vec![Ty::Error], // variadic — accept anything
-                    ret: Box::new(Ty::Unit),
-                };
-                env.defs.insert(sym.def_id, TypeInfo { ty });
-            }
-        }
 
         for item in &source_file.items {
             env.register_item(item, symbols, resolutions, unify);
@@ -262,6 +268,12 @@ impl TypeEnv {
             self.fn_effects.insert(def_id, effects);
         }
 
+        // Register allowed (absorbed) effects.
+        if !f.allowed_effects.is_empty() {
+            let effects: Vec<String> = f.allowed_effects.iter().map(|e| e.name.clone()).collect();
+            self.fn_allowed_effects.insert(def_id, effects);
+        }
+
         // Register parameters as local defs.
         self.register_params(&f.params, symbols, resolutions, unify);
     }
@@ -312,6 +324,12 @@ impl TypeEnv {
         if !m.effects.is_empty() {
             let effects: Vec<String> = m.effects.iter().map(|e| e.name.clone()).collect();
             self.fn_effects.insert(def_id, effects);
+        }
+
+        // Register allowed (absorbed) effects.
+        if !m.allowed_effects.is_empty() {
+            let effects: Vec<String> = m.allowed_effects.iter().map(|e| e.name.clone()).collect();
+            self.fn_allowed_effects.insert(def_id, effects);
         }
 
         // Register parameters.

@@ -1,5 +1,6 @@
-pub fn println(s: str)
-    {}
+pub fn print(s: str) allow Unsafe, IO
+    write(2, s.as_ptr() as Ptr[{}], s.len())
 
-pub fn print(s: str)
-    {}
+pub fn println(s: str) allow Unsafe, IO
+    print(s)
+    write(2, "\n".as_ptr() as Ptr[{}], 1)

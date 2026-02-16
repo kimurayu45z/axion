@@ -10,3 +10,4 @@ export core.string.*
 export core.array.*
 export core.ord.*
 export core.hash.*
+export core.display.*

@@ -76,6 +76,11 @@ fn compile_and_run_with_prelude(src: &str) -> RunResult {
     compile_and_run_raw(&combined)
 }
 
+fn compile_and_run_with_io(src: &str) -> RunResult {
+    let (combined, _) = axion_resolve::prelude::with_prelude_and_io(src);
+    compile_and_run_raw(&combined)
+}
+
 fn compile_and_run_with_collections(src: &str) -> RunResult {
     let (combined, _) = axion_resolve::prelude::with_prelude_and_collections(src);
     compile_and_run_raw(&combined)
@@ -94,6 +99,11 @@ fn compile_ir(src: &str) -> String {
 
 fn compile_ir_with_prelude(src: &str) -> String {
     let (combined, _) = axion_resolve::prelude::with_prelude(src);
+    compile_ir(&combined)
+}
+
+fn compile_ir_with_io(src: &str) -> String {
+    let (combined, _) = axion_resolve::prelude::with_prelude_and_io(src);
     compile_ir(&combined)
 }
 
@@ -194,7 +204,7 @@ fn compile_println() {
 fn main()
     println(\"hello\")
 ";
-    let result = compile_and_run(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.stdout.trim(), "hello");
 }
@@ -234,9 +244,9 @@ fn compile_string_interp() {
     let src = "\
 fn main()
     let name = \"world\"
-    println(`hello {name}`)
+    println(`hello {name}`.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.stdout.trim(), "hello world");
 }
@@ -246,9 +256,9 @@ fn compile_string_interp_int() {
     let src = "\
 fn main()
     let x: i64 = 42
-    println(`x is {x}`)
+    println(`x is {x}`.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.stdout.trim(), "x is 42");
 }
@@ -470,7 +480,7 @@ fn main()
     let s = `value is {x}`
     println(s)
 ";
-    let ir = compile_ir_with_prelude(src);
+    let ir = compile_ir_with_io(src);
     assert!(ir.contains("call void @free"), "IR should contain a free call for string interp buffer");
 }
 
@@ -584,7 +594,7 @@ fn main()
     println("before")
     let _ = d.val
 "#;
-    let result = compile_and_run(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
     let lines: Vec<&str> = result.stdout.trim().lines().collect();
     assert_eq!(lines.len(), 2, "Expected 2 lines, got: {:?}", lines);
@@ -1005,7 +1015,7 @@ fn main() -> i64
         Option[i64].None =>
             0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1027,7 +1037,7 @@ fn main() -> i64
             e
     a + b
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 109);
 }
 
@@ -1037,7 +1047,7 @@ fn prelude_abs() {
 fn main() -> i64
     abs[i64](0 - 42)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1047,7 +1057,7 @@ fn prelude_min_max() {
 fn main() -> i64
     min[i64](10, 20) + max[i64](10, 20)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 30);
 }
 
@@ -1061,7 +1071,7 @@ fn main() -> i64
     let opt = Option[i64].Some(c)
     opt.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -1071,7 +1081,7 @@ fn prelude_clamp() {
 fn main() -> i64
     clamp[i64](5, 0, 10) + clamp[i64](0 - 3, 0, 10) + clamp[i64](15, 0, 10)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 15);
 }
 
@@ -1081,7 +1091,7 @@ fn prelude_sign() {
 fn main() -> i64
     sign[i64](42) + sign[i64](0) + sign[i64](0 - 7) + 10
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 10);
 }
 
@@ -1093,7 +1103,7 @@ fn main() -> i64
     let y = Option[i64].None
     x.unwrap_or(0) + y.unwrap_or(10)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 52);
 }
 
@@ -1105,7 +1115,7 @@ fn main() -> i64
     let doubled = x.map[i64](|v: i64| v * 2)
     doubled.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1121,7 +1131,7 @@ fn main() -> i64
     let c = mapped.unwrap_or(0)
     a + b + c
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1145,7 +1155,7 @@ fn main() -> i64
     else
         4
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1169,7 +1179,7 @@ fn main() -> i64
     else
         4
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1179,7 +1189,7 @@ fn prelude_pow() {
 fn main() -> i64
     pow[i64](2, 6)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 64);
 }
 
@@ -1189,7 +1199,7 @@ fn prelude_gcd_lcm() {
 fn main() -> u64
     gcd[u64](12, 8) + lcm[u64](3, 4)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 16);
 }
 
@@ -1211,7 +1221,7 @@ fn main() -> i64
     else
         4
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1221,7 +1231,7 @@ fn prelude_generic_pow() {
 fn main() -> i64
     pow[i64](3, 4)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 81);
 }
 
@@ -1231,7 +1241,7 @@ fn prelude_generic_abs_sign() {
 fn main() -> i64
     abs[i64](0 - 5) + sign[i64](0 - 3) + 10
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 14);
 }
 
@@ -1243,7 +1253,7 @@ fn main() -> i64
     let r = x.and_then[i64](|v: i64| Option[i64].Some(v * 2))
     r.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1255,7 +1265,7 @@ fn main() -> i64
     let r = x.and_then[i64](|v: i64| Result[i64, i64].Ok(v + 5))
     r.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 15);
 }
 
@@ -1271,7 +1281,7 @@ fn main() -> i64
         Result[i64, i64].Err(e) =>
             e
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 20);
 }
 
@@ -1283,7 +1293,7 @@ fn main() -> i64
     let y = Option[i64].None
     x.unwrap_or(0) + y.unwrap_or(10)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 52);
 }
 
@@ -1317,7 +1327,7 @@ fn main() -> i64
     let mapped = x.map[i64](|v: i64| v * 2)
     mapped.unwrap_or(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1361,14 +1371,14 @@ fn compile_for_array() {
 #[test]
 fn compile_for_iter_counter() {
     let src = "struct Counter\n    mut current: i64\n    end: i64\n\nimpl Counter\n    fn next(mut self) -> Option[i64]\n        if self.current < self.end\n            let v = self.current\n            self.current = self.current + 1\n            Option[i64].Some(v)\n        else\n            Option[i64].None\n\nfn main() -> i64\n    let mut c = Counter #{current: 0, end: 5}\n    let mut sum: i64 = 0\n    for x in c\n        sum = sum + x\n    sum";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 10);
 }
 
 #[test]
 fn compile_for_iter_empty() {
     let src = "struct Counter\n    mut current: i64\n    end: i64\n\nimpl Counter\n    fn next(mut self) -> Option[i64]\n        if self.current < self.end\n            let v = self.current\n            self.current = self.current + 1\n            Option[i64].Some(v)\n        else\n            Option[i64].None\n\nfn main() -> i64\n    let mut c = Counter #{current: 5, end: 5}\n    let mut sum: i64 = 0\n    for x in c\n        sum = sum + x\n    sum";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1384,7 +1394,7 @@ fn main() -> i64
         sum = sum + i
     sum
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 10); // 0+1+2+3+4 = 10
 }
 
@@ -1554,7 +1564,7 @@ fn main() -> usize
     let s = String.new()
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1563,9 +1573,9 @@ fn compile_string_from() {
     let src = "\
 fn main()
     let s = String.from(\"hello\")
-    println(s)
+    println(s.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -1576,7 +1586,7 @@ fn main() -> usize
     let s = String.from(\"abc\")
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 3);
 }
 
@@ -1590,7 +1600,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -1600,9 +1610,9 @@ fn compile_string_push() {
 fn main()
     let mut s = String.from(\"hello\")
     s.push(\" world\")
-    println(s)
+    println(s.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello world");
 }
 
@@ -1614,7 +1624,7 @@ fn main()
     let st = s.as_str()
     println(st)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -1625,7 +1635,7 @@ fn main()
     let s = String.from(\"hello\")
     println(s)
 ";
-    let ir = compile_ir_with_prelude(src);
+    let ir = compile_ir_with_io(src);
     assert!(ir.contains("String.drop"), "IR should contain String.drop call");
 }
 
@@ -1634,9 +1644,9 @@ fn compile_string_type_interp() {
     let src = "\
 fn main()
     let s = String.from(\"world\")
-    println(`hello {s}`)
+    println(`hello {s}`.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello world");
 }
 
@@ -1651,7 +1661,7 @@ fn main() -> i64
     let a = Array[i64].new()
     a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1665,7 +1675,7 @@ fn main() -> i64
     a.push(30)
     a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 3);
 }
 
@@ -1678,7 +1688,7 @@ fn main() -> i64
     a.push(99)
     a[0]
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1692,7 +1702,7 @@ fn main() -> i64
     a[0] = 99
     a[0]
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 99);
 }
 
@@ -1705,7 +1715,7 @@ fn main() -> i64
     a.push(20)
     a.first() + a.last()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 30); // 10 + 20
 }
 
@@ -1719,7 +1729,7 @@ fn main() -> i64
     let v = a.pop()
     v + a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 21); // 20 + 1
 }
 
@@ -1739,7 +1749,7 @@ fn main() -> i64
     else
         2
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1); // before=true, after=false → 1
 }
 
@@ -1756,7 +1766,7 @@ fn main() -> i64
         sum = sum + x
     sum
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 6); // 1+2+3
 }
 
@@ -1782,7 +1792,7 @@ fn main() -> i64
     a.clear()
     a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1797,7 +1807,7 @@ fn main() -> i64
     a.push(42)
     a.first()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1814,7 +1824,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -1831,7 +1841,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1845,7 +1855,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1860,7 +1870,7 @@ fn main() -> i64
     let removed = a.remove(1)
     removed + a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 22); // 20 + 2
 }
 
@@ -1875,7 +1885,7 @@ fn main() -> i64
     a.remove(0)
     a.first()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 20);
 }
 
@@ -1890,7 +1900,7 @@ fn main() -> i64
     let v = a.remove(2)
     v + a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 32); // 30 + 2
 }
 
@@ -1904,7 +1914,7 @@ fn main() -> i64
     a.insert(0, 10)
     a.first() + a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 13); // 10 + 3
 }
 
@@ -1918,7 +1928,7 @@ fn main() -> i64
     a.insert(1, 20)
     a[1]
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 20);
 }
 
@@ -1932,7 +1942,7 @@ fn main() -> i64
     a.insert(2, 30)
     a.last()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 30);
 }
 
@@ -1947,7 +1957,7 @@ fn main() -> i64
     a.reverse()
     a.first()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 3);
 }
 
@@ -1962,7 +1972,7 @@ fn main() -> i64
     a.reverse()
     a[0] + a[1] + a[2]
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 60); // 30+20+10 = 60
 }
 
@@ -1975,7 +1985,7 @@ fn main() -> i64
     a.reverse()
     a.first()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 42);
 }
 
@@ -1987,7 +1997,7 @@ fn main() -> i64
     a.reverse()
     a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -1998,7 +2008,7 @@ fn main() -> usize
     let s = String.from(\"hello\") + String.from(\" world\")
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 11); // "hello world".len() == 11
 }
 
@@ -2009,7 +2019,7 @@ fn main() -> usize
     let s = String.from(\"abc\") + String.new()
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 3); // "abc" + "" == "abc", len == 3
 }
 
@@ -2024,7 +2034,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2039,7 +2049,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2054,7 +2064,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2067,7 +2077,7 @@ fn main() -> usize
     let s = \"hello\"
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -2080,7 +2090,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2093,7 +2103,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2104,7 +2114,7 @@ fn main() -> u8
     let s = \"ABC\"
     s.byte_at(0)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 65); // 'A' = 65
 }
 
@@ -2116,7 +2126,7 @@ fn main()
     let sub = s.slice(6, 11)
     println(sub)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "world");
 }
 
@@ -2129,7 +2139,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2142,7 +2152,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2155,7 +2165,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2168,7 +2178,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2181,7 +2191,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2194,7 +2204,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2207,7 +2217,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2216,9 +2226,9 @@ fn compile_str_to_string() {
     let src = "\
 fn main()
     let s = \"hello\".to_string()
-    println(s)
+    println(s.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -2231,7 +2241,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2244,7 +2254,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2257,7 +2267,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2266,9 +2276,9 @@ fn compile_str_concat() {
     let src = "\
 fn main()
     let s = \"hello\" + \" world\"
-    println(s)
+    println(s.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello world");
 }
 
@@ -2279,7 +2289,7 @@ fn main()
     let s = \"  hello  \".trim()
     println(s)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -2290,7 +2300,7 @@ fn main() -> usize
     let s = \"  hello\".trim_start()
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -2301,7 +2311,7 @@ fn main() -> usize
     let s = \"hello  \".trim_end()
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -2314,7 +2324,7 @@ fn main() -> u8
     let s = String.from(\"ABC\")
     s.byte_at(1)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 66); // 'B' = 66
 }
 
@@ -2328,7 +2338,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2342,7 +2352,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2356,7 +2366,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -2368,7 +2378,7 @@ fn main()
     let sub = s.substring(0, 5)
     println(sub)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -2380,7 +2390,7 @@ fn main() -> usize
     s.clear()
     s.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 0);
 }
 
@@ -2389,9 +2399,9 @@ fn compile_string_repeat() {
     let src = "\
 fn main()
     let s = String.from(\"ab\").repeat(3)
-    println(s)
+    println(s.as_str())
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "ababab");
 }
 
@@ -2403,7 +2413,7 @@ fn main()
     let t = s.trim()
     println(t)
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.stdout.trim(), "hello");
 }
 
@@ -2415,7 +2425,7 @@ fn main() -> usize
     let t = s.trim_start()
     t.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -2427,7 +2437,7 @@ fn main() -> i64
     let t = s.trim_end()
     t.len() as i64
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 5);
 }
 
@@ -2448,7 +2458,7 @@ fn main() -> i64
     else
         0
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 3); // first is true, so returns len == 3
 }
 
@@ -2461,7 +2471,7 @@ fn main() -> i64
     a.push(2.5)
     a.len()
 ";
-    let result = compile_and_run_with_prelude(src);
+    let result = compile_and_run_with_io(src);
     assert_eq!(result.exit_code, 2); // len after 2 pushes
 }
 

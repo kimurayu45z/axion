@@ -27,18 +27,6 @@ pub(crate) fn register_builtins(ctx: &mut ResolveContext, root: ScopeId) {
 
     // `Self` is not registered globally — it is injected per method/constructor scope.
     // `Fn` is a keyword-level type expression handled by the parser, not a named type.
-
-    // Register common prelude values: `print`, `println` as built-in functions.
-    for &name in &["print", "println"] {
-        let def_id = ctx.alloc_symbol(
-            name.to_string(),
-            SymbolKind::Function,
-            Visibility::Pub,
-            Span::dummy(),
-            None,
-        );
-        ctx.scope_tree.insert_value(root, name.to_string(), def_id);
-    }
 }
 
 /// Return the list of built-in primitive type names (for testing).

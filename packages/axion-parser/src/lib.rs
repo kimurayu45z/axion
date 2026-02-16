@@ -210,6 +210,13 @@ impl Parser {
             Vec::new()
         };
 
+        let allowed_effects = if self.check(&TokenKind::Allow) {
+            self.advance();
+            self.parse_effect_list()?
+        } else {
+            Vec::new()
+        };
+
         self.skip_newlines();
         let body = self.parse_block()?;
 
@@ -220,6 +227,7 @@ impl Parser {
             params,
             return_type,
             effects,
+            allowed_effects,
             body,
         })
     }
@@ -366,6 +374,13 @@ impl Parser {
             Vec::new()
         };
 
+        let allowed_effects = if self.check(&TokenKind::Allow) {
+            self.advance();
+            self.parse_effect_list()?
+        } else {
+            Vec::new()
+        };
+
         self.skip_newlines();
         let body = self.parse_block()?;
 
@@ -388,6 +403,7 @@ impl Parser {
                     params,
                     return_type,
                     effects,
+                    allowed_effects,
                     body,
                 }),
             })

@@ -1,8 +1,9 @@
-pub fn println(s: str) with IO
-    {}
+pub fn print(s: str) with IO allow Unsafe
+    write(1, s.as_ptr() as Ptr[{}], s.len())
 
-pub fn print(s: str) with IO
-    {}
+pub fn println(s: str) with IO allow Unsafe
+    print(s)
+    write(1, "\n".as_ptr() as Ptr[{}], 1)
 
 pub enum IoError
     NotFound

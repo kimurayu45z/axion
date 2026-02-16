@@ -92,10 +92,19 @@ pub fn type_check_with_imports(
                     .iter()
                     .find(|s| s.span == item.span)
                     .map(|s| s.def_id);
-                let current_effects = fn_def_id
+                let mut current_effects = fn_def_id
                     .and_then(|id| env.fn_effects.get(&id))
                     .cloned()
                     .unwrap_or_default();
+
+                // Merge allowed (absorbed) effects — available inside body but not propagated.
+                if let Some(allowed) = fn_def_id.and_then(|id| env.fn_allowed_effects.get(&id)) {
+                    for eff in allowed {
+                        if !current_effects.iter().any(|e| e == eff) {
+                            current_effects.push(eff.clone());
+                        }
+                    }
+                }
 
                 let mut ctx = InferCtx {
                     env: &mut env,
@@ -164,6 +173,15 @@ pub fn type_check_with_imports(
                     .and_then(|id| env.fn_effects.get(&id))
                     .cloned()
                     .unwrap_or_default();
+
+                // Merge allowed (absorbed) effects — available inside body but not propagated.
+                if let Some(allowed) = method_def_id.and_then(|id| env.fn_allowed_effects.get(&id)) {
+                    for eff in allowed {
+                        if !current_effects.iter().any(|e| e == eff) {
+                            current_effects.push(eff.clone());
+                        }
+                    }
+                }
 
                 // Intrinsic receiver types (Array, String, HashMap) are trusted stdlib.
                 // Grant implicit effects so their internal Ptr/malloc use doesn't error.
